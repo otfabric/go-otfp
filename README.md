@@ -670,7 +670,7 @@ Sends a **RegisterSession** encapsulation command and validates the response:
 
 This library is designed for safe use in ICS/SCADA environments:
 
-- **No aggressive scanning** — single minimal packet per protocol check
+- **No aggressive scanning** — one minimal request per protocol check; the S7 probe sends two (COTP connect, then S7 setup) and the CAN probe two (version, then serial)
 - **No malformed payloads** — all probes are standards-compliant
 - **No exploit patterns** — uses safe, read-only diagnostic functions
 - **No flooding** — one connection per check, graceful close
