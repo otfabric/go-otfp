@@ -4,10 +4,36 @@ run:
   timeout: 5m
 
 linters:
+  default: none
   enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
-    - misspell
+    - errcheck       # unchecked errors
+    - govet          # go vet checks
+    - ineffassign    # assigned but never used
+    - staticcheck    # comprehensive static analysis (includes gosimple + unused)
+    - misspell       # common spelling mistakes
+    - godot          # comment punctuation
+    - nilerr         # return nil instead of err
+  settings:
+    errcheck:
+      # Writing to CLI output streams: a failed stdout/stderr write is not
+      # actionable, and checking every Fprint would drown the command code.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*text/tabwriter.Writer).Flush
+  exclusions:
+    rules:
+      # The CIP catalogue is generated from go-ethernetip and holds vendor
+      # names as ODVA publishes them (e.g. "Alfa Instrumentos").
+      - path: protocols/enip/catalog.go
+        linters:
+          - misspell
+      # Tests close best-effort sessions in defers.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

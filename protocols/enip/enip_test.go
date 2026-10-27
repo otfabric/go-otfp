@@ -5,284 +5,136 @@ package enip
 import (
 	"context"
 	"encoding/binary"
-	"net"
+	"encoding/hex"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/otfabric/go-otfp/core"
+	"github.com/otfabric/go-otfp/internal/testsrv"
 )
 
-// startMockServer starts a TCP server that accepts one connection,
-// reads data, and responds with the provided response bytes.
-func startMockServer(t *testing.T, response []byte) (string, func()) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+func unhex(s string) []byte {
+	b, err := hex.DecodeString(strings.ReplaceAll(s, " ", ""))
 	if err != nil {
-		t.Fatalf("failed to start mock server: %v", err)
+		panic(err)
 	}
+	return b
+}
 
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
+// ListIdentity reply of the OpENer opener-sample fixture, with the probe's
+// sender context (zeroed here; the handler copies the real one back).
+const openerBody = "01 00 0c 00 2b 00 01 00 00 02 af 12 ac 11 00 02 00 00 00 00 00 00 00 00 01 00 0c 00 e9 fd 02 03 00 00 15 cd 5b 07 09 4f 70 45 4e 65 72 20 50 43 00"
+
+// opener replies to ListIdentity (and RegisterSession) as OpENer does,
+// echoing the sender context.
+func opener() testsrv.Handler {
+	body := unhex(openerBody)
+	return func(req []byte) ([]byte, bool) {
+		if len(req) < headerLen {
+			return nil, true
 		}
-		defer conn.Close() //nolint:errcheck
-
-		buf := make([]byte, 1024)
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		_, _ = conn.Read(buf)
-
-		if response != nil {
-			_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-			_, _ = conn.Write(response)
+		cmd := binary.LittleEndian.Uint16(req)
+		var ctx [8]byte
+		copy(ctx[:], req[12:20])
+		switch cmd {
+		case cmdListIdentity:
+			return encap(cmdListIdentity, 0, ctx, body), false
+		case cmdRegisterSession:
+			return encap(cmdRegisterSession, 1, ctx, []byte{1, 0, 0, 0}), false
 		}
-	}()
-
-	return ln.Addr().String(), func() { _ = ln.Close() }
-}
-
-func parseAddr(addr string) (string, int) {
-	host, portStr, _ := net.SplitHostPort(addr)
-	port := 0
-	for _, c := range portStr {
-		port = port*10 + int(c-'0')
+		return nil, true
 	}
-	return host, port
 }
 
-// buildRegisterSessionResponse builds a valid RegisterSession response.
-func buildRegisterSessionResponse(sessionID uint32, status uint32) []byte {
-	resp := make([]byte, encapHeaderSize+4)
-	binary.LittleEndian.PutUint16(resp[0:2], cmdRegisterSession)
-	binary.LittleEndian.PutUint16(resp[2:4], 4) // data length
-	binary.LittleEndian.PutUint32(resp[4:8], sessionID)
-	binary.LittleEndian.PutUint32(resp[8:12], status)
-	// Context and Options remain zero.
-	// RegisterSession data.
-	binary.LittleEndian.PutUint16(resp[24:26], 1) // protocol version
-	binary.LittleEndian.PutUint16(resp[26:28], 0) // options
-	return resp
+func TestDetectTCP(t *testing.T) {
+	target := testsrv.TCP(t, opener())
+	r, err := New().Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify, Trace: true})
+	if err != nil || !r.Matched || r.Confidence != core.ConfidenceCertain {
+		t.Fatalf("%v %v", r, err)
+	}
+	id := r.Identity
+	if id.Vendor != "Rockwell Automation/Allen-Bradley" || id.Product != "OpENer PC" || id.Version != "2.3" ||
+		id.Serial != "0x075BCD15" || id.Attributes["deviceType"] != "Communications Adapter" || id.Attributes["productCode"] != "65001" {
+		t.Fatalf("identity %+v", id)
+	}
+	if r.Fingerprint.Signature != "vendor=1;devtype=0x0c;product=65001;rev=2.3;session=ok" {
+		t.Fatalf("signature %q", r.Fingerprint.Signature)
+	}
 }
 
-func TestENIPDetectValidSession(t *testing.T) {
-	resp := buildRegisterSessionResponse(0x00000001, 0x00000000)
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
+func TestDetectUDP(t *testing.T) {
+	target := testsrv.UDP(t, opener())
+	r, err := NewUDP().Detect(context.Background(), target, core.Options{})
+	if err != nil || !r.Matched || r.Confidence != core.ConfidenceCertain {
+		t.Fatalf("%v %v", r, err)
+	}
+	// No RegisterSession over UDP.
+	if r.Fingerprint.Metadata["vendorId"] != "1" {
+		t.Fatalf("metadata %v", r.Fingerprint.Metadata)
+	}
+}
 
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
+func TestNetworkMismatch(t *testing.T) {
+	if New().Info().Network != core.TCP || NewUDP().Info().Network != core.UDP {
+		t.Fatal("network")
+	}
+	// A UDP target handed to the TCP fingerprinter is skipped.
+	r, err := New().Detect(context.Background(), core.Target{Host: "127.0.0.1", Port: 1, Network: core.UDP}, core.Options{})
+	if err != nil || r.Matched {
+		t.Fatalf("%v %v", r, err)
+	}
+}
+
+func TestErrorStatus(t *testing.T) {
+	target := testsrv.TCP(t, func(req []byte) ([]byte, bool) {
+		var ctx [8]byte
+		copy(ctx[:], req[12:20])
+		b := encap(cmdListIdentity, 0, ctx, nil)
+		binary.LittleEndian.PutUint32(b[8:], 0x0001)
+		return b, false
 	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
+	r, err := New().Detect(context.Background(), target, core.Options{})
+	if err != nil || r.Confidence != core.ConfidenceHigh || !r.Matched {
+		t.Fatalf("%v %v", r, err)
 	}
-	if !result.Matched {
-		t.Error("Expected match for valid RegisterSession response")
-	}
-	if result.Confidence < 0.9 {
-		t.Errorf("Confidence too low: %f", result.Confidence)
-	}
-	t.Logf("Result: %s", result)
 }
 
-func TestENIPDetectErrorResponse(t *testing.T) {
-	// Error response: session=0, status=1 (unsupported command).
-	resp := buildRegisterSessionResponse(0x00000000, 0x00000001)
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
+func TestNotENIP(t *testing.T) {
+	for name, resp := range map[string][]byte{
+		"ssh":       []byte("SSH-2.0\r\n"),
+		"bad len":   unhex("63 00 ff 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"),
+		"wrong cmd": encap(0x0099, 0, [8]byte{}, nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			target := testsrv.TCP(t, testsrv.Script(resp))
+			target.Timeout = 300 * time.Millisecond
+			r, _ := New().Detect(context.Background(), target, core.Options{})
+			if r.Matched {
+				t.Fatalf("%v", r)
+			}
+		})
+	}
+}
 
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
+func TestCatalog(t *testing.T) {
+	if vendorName(1) != "Rockwell Automation/Allen-Bradley" || vendorName(0xFFFF) != "" {
+		t.Fatal("vendorName")
+	}
+	if deviceTypeName(0x0C) != "Communications Adapter" || deviceTypeName(0x0E) != "Programmable Logic Controller" {
+		t.Fatal("deviceTypeName")
+	}
+	if deviceTypeName(0x9999) != "device type 0x9999" {
+		t.Fatalf("fallback %q", deviceTypeName(0x9999))
+	}
+}
+
+func FuzzParse(f *testing.F) {
+	f.Add(unhex(openerBody))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if _, _, err := parseEncap(b); err == nil {
+			_, _ = parseIdentityItem(b[min(len(b), headerLen):])
+		}
+		_, _ = parseIdentityItem(b)
 	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	// Should still match with reduced confidence.
-	if !result.Matched {
-		t.Error("Expected match for error response (still valid EtherNet/IP)")
-	}
-	t.Logf("Result: %s", result)
-}
-
-func TestENIPDetectWrongCommand(t *testing.T) {
-	resp := make([]byte, encapHeaderSize)
-	binary.LittleEndian.PutUint16(resp[0:2], 0xFFFF) // Invalid command.
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Should not match with invalid command")
-	}
-}
-
-func TestENIPDetectTruncatedResponse(t *testing.T) {
-	resp := []byte{0x65, 0x00, 0x04, 0x00}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Should not match truncated response")
-	}
-}
-
-func TestENIPDetectNoResponse(t *testing.T) {
-	addr, cleanup := startMockServer(t, nil)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	_, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 1 * time.Second,
-	})
-	_ = err
-}
-
-func TestENIPDetectConnectionRefused(t *testing.T) {
-	fp := New()
-	_, err := fp.Detect(context.Background(), core.Target{
-		IP:      "127.0.0.1",
-		Port:    1,
-		Timeout: 1 * time.Second,
-	})
-	if err == nil {
-		t.Error("Expected error for connection refused")
-	}
-}
-
-func TestENIPDetectRandomBinary(t *testing.T) {
-	resp := []byte{
-		0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Random binary should not match EtherNet/IP")
-	}
-}
-
-func TestENIPDetectPartialResponse(t *testing.T) {
-	// Valid header but only 20 bytes (less than 24).
-	resp := make([]byte, 20)
-	binary.LittleEndian.PutUint16(resp[0:2], cmdRegisterSession)
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Should not match partial response")
-	}
-}
-
-func TestENIPName(t *testing.T) {
-	fp := New()
-	if fp.Name() != core.ProtocolENIP {
-		t.Errorf("Name() = %s, want %s", fp.Name(), core.ProtocolENIP)
-	}
-}
-
-func TestBuildProbe(t *testing.T) {
-	probe := buildProbe()
-	if len(probe) != 28 {
-		t.Fatalf("probe length = %d, want 28", len(probe))
-	}
-	command := binary.LittleEndian.Uint16(probe[0:2])
-	if command != cmdRegisterSession {
-		t.Errorf("command = 0x%04X, want 0x%04X", command, cmdRegisterSession)
-	}
-	dataLen := binary.LittleEndian.Uint16(probe[2:4])
-	if dataLen != 4 {
-		t.Errorf("data length = %d, want 4", dataLen)
-	}
-	sessionID := binary.LittleEndian.Uint32(probe[4:8])
-	if sessionID != 0 {
-		t.Errorf("session ID = %d, want 0", sessionID)
-	}
-	protoVer := binary.LittleEndian.Uint16(probe[24:26])
-	if protoVer != 1 {
-		t.Errorf("protocol version = %d, want 1", protoVer)
-	}
-}
-
-func TestENIPDetectModbusEcho(t *testing.T) {
-	// Simulate a Modbus device echoing the ENIP probe with error flag at byte 7.
-	probe := buildProbe()
-	resp := make([]byte, len(probe))
-	copy(resp, probe)
-	resp[7] = probe[7] | 0x80 // Modbus error flag
-	resp[8] = 0x04            // Exception code
-
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Errorf("Modbus echo should not match as EtherNet/IP (confidence=%f)", result.Confidence)
-	}
 }

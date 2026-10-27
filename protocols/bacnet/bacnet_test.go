@@ -4,171 +4,133 @@ package bacnet
 
 import (
 	"context"
-	"encoding/binary"
-	"net"
+	"encoding/hex"
 	"testing"
 	"time"
 
 	"github.com/otfabric/go-otfp/core"
+	"github.com/otfabric/go-otfp/internal/testsrv"
 )
 
-func startMockServer(t *testing.T, response []byte) (string, func()) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+func unhex(s string) []byte {
+	b, err := hex.DecodeString(s)
 	if err != nil {
-		t.Fatalf("failed to start mock server: %v", err)
+		panic(err)
 	}
+	return b
+}
 
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
+// Request/response pairs captured from the bacnet-interop bacnet-stack
+// device (instance 1234, vendor 260 "BACnet Stack at SourceForge").
+var frames = map[string]string{
+	"810a001101040005010c0c023fffff194b": "810a0017010030010c0c020004d2194b3ec4020004d23f", // wildcard object id -> device 1234
+	"810a001101040005020c0c020004d2194d": "810a0022010030020c0c020004d2194d3e750e00496e7465726f704465766963653f",
+	"810a001101040005020c0c020004d21979": "810a0030010030020c0c020004d219793e751c004241436e657420537461636b20617420536f75726365466f7267653f",
+	"810a001101040005020c0c020004d21978": "810a0015010030020c0c020004d219783e2201043f",
+	"810a001101040005020c0c020004d21946": "810a0017010030020c0c020004d219463e7400474e553f",
+	"810a001101040005020c0c020004d2192c": "810a001a010030020c0c020004d2192c3e750600312e362e313f",
+	"810a001101040005020c0c020004d2190c": "810a0017010030020c0c020004d2190c3e7400312e303f",
+}
+
+func device() testsrv.Handler {
+	return func(req []byte) ([]byte, bool) {
+		if r, ok := frames[hex.EncodeToString(req)]; ok {
+			return unhex(r), false
 		}
-		defer conn.Close() //nolint:errcheck
+		return nil, false
+	}
+}
 
-		buf := make([]byte, 1024)
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		_, _ = conn.Read(buf)
+func TestDetectIdentify(t *testing.T) {
+	target := testsrv.UDP(t, device())
+	r, err := New().Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify, Trace: true})
+	if err != nil || !r.Matched || r.Confidence != core.ConfidenceCertain {
+		t.Fatalf("%v %v", r, err)
+	}
+	id := r.Identity
+	if id.Name != "InteropDevice" || id.Vendor != "BACnet Stack at SourceForge" || id.VendorID != "260" ||
+		id.Model != "GNU" || id.Version != "1.6.1" || id.Attributes["deviceInstance"] != "1234" ||
+		id.Attributes["applicationSoftwareVersion"] != "1.0" {
+		t.Fatalf("identity %+v", id)
+	}
+	if r.Fingerprint.Signature != "apdu=complex-ack" {
+		t.Fatalf("signature %q", r.Fingerprint.Signature)
+	}
+}
 
-		if response != nil {
-			_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-			_, _ = conn.Write(response)
+func TestProbeBytes(t *testing.T) {
+	if got := hex.EncodeToString(readProperty(1, wildcardInstance, propObjectIdentifier)); got != "810a001101040005010c0c023fffff194b" {
+		t.Fatalf("wildcard read %s", got)
+	}
+	// Reference unicast Who-Is from go-bacnet: 81 0a 00 08 01 00 10 08.
+	if got := hex.EncodeToString(whoIs()); got != "810a000801001008" {
+		t.Fatalf("who-is %s", got)
+	}
+}
+
+func TestRejectAndAbort(t *testing.T) {
+	cases := map[string]string{
+		"reject": "810a00090100600100",
+		"abort":  "810a00090100700100",
+		"error":  "810a000a010050019106",
+	}
+	for name, resp := range cases {
+		t.Run(name, func(t *testing.T) {
+			target := testsrv.UDP(t, testsrv.Script(unhex(resp)))
+			r, err := New().Detect(context.Background(), target, core.Options{})
+			if err != nil || !r.Matched || r.Confidence != core.ConfidenceHigh {
+				t.Fatalf("%v %v", r, err)
+			}
+		})
+	}
+}
+
+func TestIAmFallback(t *testing.T) {
+	// A device that stays silent to the wildcard read but answers Who-Is
+	// with an I-Am (device 1234, vendor 15).
+	iamBytes := unhex("810b001401001000c4020004d22205c49103210f")
+	target := testsrv.UDP(t, func(req []byte) ([]byte, bool) {
+		if req[7] == svcWhoIs {
+			return iamBytes, false
 		}
-	}()
-
-	return ln.Addr().String(), func() { _ = ln.Close() }
-}
-
-func parseAddr(addr string) (string, int) {
-	host, portStr, _ := net.SplitHostPort(addr)
-	port := 0
-	for _, c := range portStr {
-		port = port*10 + int(c-'0')
-	}
-	return host, port
-}
-
-func buildBACnetResponse(funcCode byte, payload []byte) []byte {
-	totalLen := bvlcHeaderSize + len(payload)
-	frame := make([]byte, totalLen)
-	frame[0] = bvlcType
-	frame[1] = funcCode
-	binary.BigEndian.PutUint16(frame[2:4], uint16(totalLen))
-	copy(frame[4:], payload)
-	return frame
-}
-
-func TestBACnetDetectValidResponse(t *testing.T) {
-	payload := []byte{npduVersion, 0x00, 0x30, 0x08} // NPDU + I-Am
-	resp := buildBACnetResponse(0x0A, payload)
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
+		return nil, false
 	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
+	r, err := New().Detect(context.Background(), target, core.Options{})
+	if err != nil || !r.Matched || r.Fingerprint.Signature != "apdu=i-am" {
+		t.Fatalf("%v %v", r, err)
 	}
-	if !result.Matched {
-		t.Error("Expected match for valid BACnet response")
-	}
-	if result.Confidence < 0.7 {
-		t.Errorf("Confidence too low: %f", result.Confidence)
-	}
-	t.Logf("Result: %s", result)
-}
-
-func TestBACnetDetectWrongType(t *testing.T) {
-	resp := []byte{0x82, 0x0A, 0x00, 0x04}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Should not match wrong BVLC type")
+	if r.Identity == nil || r.Identity.Attributes["vendorId"] != "15" {
+		t.Fatalf("identity %+v", r.Identity)
 	}
 }
 
-func TestBACnetDetectTruncated(t *testing.T) {
-	resp := []byte{0x81}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
+func TestNotBACnet(t *testing.T) {
+	target := testsrv.UDP(t, testsrv.Script([]byte("random")))
+	target.Timeout = 300 * time.Millisecond
+	r, _ := New().Detect(context.Background(), target, core.Options{})
+	if r.Matched {
+		t.Fatalf("%v", r)
 	}
-	if result.Matched {
-		t.Error("Should not match truncated response")
-	}
-}
-
-func TestBACnetDetectNoResponse(t *testing.T) {
-	addr, cleanup := startMockServer(t, nil)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	_, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 1 * time.Second,
-	})
-	_ = err
-}
-
-func TestBACnetDetectConnectionRefused(t *testing.T) {
-	fp := New()
-	_, err := fp.Detect(context.Background(), core.Target{
-		IP:      "127.0.0.1",
-		Port:    1,
-		Timeout: 1 * time.Second,
-	})
+	silent := testsrv.UDP(t, testsrv.Script())
+	silent.Timeout = 200 * time.Millisecond
+	_, err := New().Detect(context.Background(), silent, core.Options{})
 	if err == nil {
-		t.Error("Expected error for connection refused")
+		t.Fatal("want timeout on silence")
+	}
+	if New().Info().Network != core.UDP {
+		t.Fatal("network")
 	}
 }
 
-func TestBACnetName(t *testing.T) {
-	fp := New()
-	if fp.Name() != core.ProtocolBACnet {
-		t.Errorf("Name() = %s, want %s", fp.Name(), core.ProtocolBACnet)
+func FuzzParse(f *testing.F) {
+	for req, resp := range frames {
+		f.Add(unhex(resp))
+		_ = req
 	}
-}
-
-func TestBuildProbe(t *testing.T) {
-	probe := buildProbe()
-	if len(probe) < bvlcHeaderSize {
-		t.Fatalf("probe too short: %d", len(probe))
-	}
-	if probe[0] != bvlcType {
-		t.Errorf("BVLC type = 0x%02X, want 0x%02X", probe[0], bvlcType)
-	}
-	pktLen := binary.BigEndian.Uint16(probe[2:4])
-	if int(pktLen) != len(probe) {
-		t.Errorf("length field = %d, actual = %d", pktLen, len(probe))
-	}
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if a, err := parse(b); err == nil {
+			_, _, _ = readPropertyValue(a)
+			_, _, _ = parseIAm(a.apdu)
+		}
+	})
 }

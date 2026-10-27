@@ -28,10 +28,11 @@ We will acknowledge your report within 48 hours and aim to provide a fix or miti
 
 `go-otfp` and `otprobe` identify a protocol by sending it a real request and reading the answer. The probes are small and do not write process values, but they are not invisible to the device:
 
-- **Only probe systems you are authorised to scan**, and follow the site's change process for production networks. Probes may raise alerts in OT intrusion detection systems
-- Every protocol check opens its own TCP connection; a full `detect` can send up to ten different protocols' requests to the same port
-- Some probes open protocol state on the device before the connection is closed: the S7 probe performs a COTP connect and S7 Setup Communication (rack 0, slot 2), the EtherNet/IP probe a RegisterSession, and the IEC 60870-5-104 probe sends STARTDT_ACT. None is followed by a matching teardown message; the TCP connection is simply closed
-- The defaults are already sequential (`core.DefaultEngineConfig`, `otprobe detect` without `--parallel`), but with no delay between probes. Use `--safe` (or `core.SafeEngineConfig` with `MinInterval`) to add a 200 ms gap and a concurrency of one, and `--dry-run` to see the plan without sending anything
+- **Only probe systems you are authorised to scan**, and follow the site's change process for production networks. Probes may raise alerts in OT intrusion detection systems.
+- Detection sends a protocol's standard handshake or a single harmless request; it never writes a value, issues a control, or changes a device's configuration. `--identify` adds each protocol's own read-only identity request (Read Device Identification, the CIP Identity object, SZL, MMS Identify, the BACnet Device object, OPC UA GetEndpoints, PROFINET I&M0, …).
+- A full scan may open several protocols' connections to the same port, one at a time. Some probes open protocol state before the connection is closed: the S7 probe performs a COTP connect and S7 Setup Communication, the IEC 60870-5-104 probe may send STARTDT in identify mode, and the OCPP probe completes a WebSocket upgrade. Each is closed promptly; the IEC 104 identify probe sends STOPDT before closing.
+- Detection is sequential by default (`core.DefaultEngineConfig`, `otprobe detect` without `--parallel`). Use `--safe` (`core.SafeEngineConfig`) for passive probes only, the likely protocols of the port first, and a 250 ms gap between probes; `--max-concurrency` and `--min-interval` tune this further.
+- `--all` runs every applicable probe instead of stopping at the first confident match; omit it (the default) to send the fewest probes.
 
 ### Results are hints, not proof
 
@@ -39,5 +40,5 @@ The fingerprinted protocols carry no authentication, and the probes run over pla
 
 ### Input handling
 
-- Each response is read with a deadline (`Target.Timeout`, 5 s in `otprobe`) into a fixed buffer of at most 4096 bytes, and every validator checks lengths before use
-- The response validators are fuzzed (`FuzzValidateResponse` in each protocol package, plus the shared TPKT/COTP and SLCAN checks)
+- Each response is read with a deadline (`Target.Timeout`, 3 s by default) into a bounded buffer, and every parser checks lengths before use.
+- The parsers are fuzzed: each protocol package has a `Fuzz` target, as do the shared TPKT/COTP and Modbus MBAP codecs. `make fuzz` runs them, and CI fuzzes briefly on every push.

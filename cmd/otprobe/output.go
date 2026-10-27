@@ -7,193 +7,171 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"time"
+	"sort"
+	"strings"
+	"text/tabwriter"
 
 	"github.com/otfabric/go-otfp/core"
 )
 
-// Exit codes — stable numeric API for callers.
-const (
-	exitDetected  = 0
-	exitUnknown   = 1
-	exitConnError = 2
-	exitBadParams = 3
-	exitPartial   = 4 // matched but below high-confidence threshold
-)
-
-// jsonOutput is the machine-readable result envelope.
-type jsonOutput struct {
-	Target          string            `json:"target"`
-	Protocol        string            `json:"protocol"`
-	Matched         bool              `json:"matched"`
-	Confidence      float64           `json:"confidence"`
-	ConfidenceLevel string            `json:"confidence_level"`
-	Details         string            `json:"details,omitempty"`
-	Error           *jsonError        `json:"error,omitempty"`
-	Fingerprint     *core.Fingerprint `json:"fingerprint,omitempty"`
-	DetectionID     string            `json:"detection_id"`
-	Timestamp       string            `json:"timestamp"`
+func writeReport(w io.Writer, r core.Report, f detectFlags) error {
+	switch f.format {
+	case "json":
+		return writeJSON(w, r, f.trace)
+	case "table":
+		return writeTable(w, r)
+	case "text", "":
+		return writeText(w, r, f.trace)
+	}
+	return fmt.Errorf("unknown format %q (want text, json or table)", f.format)
 }
 
-// jsonError provides structured error information for machine consumers.
-type jsonError struct {
-	Type    string `json:"type"`
-	Message string `json:"message"`
-}
-
-// classifyError returns a structured jsonError from a core result error.
-func classifyError(err error) *jsonError {
-	if err == nil {
-		return nil
+func writeText(w io.Writer, r core.Report, trace bool) error {
+	fmt.Fprintf(w, "Target:   %s\n", r.Target)
+	fmt.Fprintf(w, "Duration: %s\n", r.Duration.Round(1e6))
+	if r.Best.Matched {
+		fmt.Fprintf(w, "Detected: %s", r.Best.Protocol)
+		if r.Best.Variant != "" {
+			fmt.Fprintf(w, " (%s)", r.Best.Variant)
+		}
+		fmt.Fprintf(w, " — confidence %.2f\n", r.Best.Confidence)
+		if id := r.Best.Identity.String(); id != "" {
+			fmt.Fprintf(w, "Identity: %s\n", id)
+		}
+	} else {
+		fmt.Fprintln(w, "Detected: none")
 	}
-	errType := "unknown"
-	switch err.(type) {
-	case *core.TimeoutError:
-		errType = "timeout"
-	case *core.ConnectionError:
-		errType = "connection"
-	case *core.InvalidResponseError:
-		errType = "invalid_response"
-	case *core.DetectError:
-		errType = "detection"
-	}
-	return &jsonError{Type: errType, Message: err.Error()}
-}
-
-func writeJSON(w io.Writer, target core.Target, r core.Result) int {
-	out := jsonOutput{
-		Target:          target.Addr(),
-		Protocol:        r.Protocol.String(),
-		Matched:         r.Matched,
-		Confidence:      float64(r.Confidence),
-		ConfidenceLevel: ConfidenceLevel(r.Confidence),
-		Details:         r.Details,
-		Error:           classifyError(r.Error),
-		Fingerprint:     r.Fingerprint,
-		DetectionID:     r.DetectionID,
-		Timestamp:       r.Timestamp.Format(time.RFC3339Nano),
-	}
-
-	enc := json.NewEncoder(w)
-	enc.SetIndent("", "  ")
-	_ = enc.Encode(out) //nolint:errcheck
-
-	return exitCodeForResult(r)
-}
-
-func writeTextResult(w io.Writer, target core.Target, r core.Result, verbose bool, allResults []core.Result) int {
-	_, _ = fmt.Fprintf(w, "Target: %s\n", target.Addr())
-
-	if !r.Matched {
-		_, _ = fmt.Fprintln(w, "Detected: Unknown")
-		return exitUnknown
-	}
-
-	_, _ = fmt.Fprintf(w, "Detected: %s\n", r.Protocol)
-	_, _ = fmt.Fprintf(w, "Confidence: %.2f (%s)\n", r.Confidence, ConfidenceLevel(r.Confidence))
-
-	if verbose {
-		_, _ = fmt.Fprintf(w, "Details: %s\n", r.Details)
-
-		if len(allResults) > 1 {
-			_, _ = fmt.Fprintln(w, "\nAll results:")
-			for _, ar := range allResults {
-				status := "no match"
-				if ar.Matched {
-					status = fmt.Sprintf("matched (%.2f)", ar.Confidence)
-				}
-				_, _ = fmt.Fprintf(w, "  %-20s %s\n", ar.Protocol, status)
+	matches := r.Matches()
+	if len(matches) > 0 {
+		fmt.Fprintln(w, "\nMatches:")
+		for _, res := range matches {
+			fmt.Fprintf(w, "  %-18s %.2f  %s\n", label(res), res.Confidence, res.Details)
+			for _, e := range res.Evidence {
+				fmt.Fprintf(w, "      · %s\n", e)
+			}
+			if res.Identity != nil {
+				writeIdentity(w, res.Identity)
 			}
 		}
 	}
+	if trace {
+		writeTrace(w, r)
+	}
+	return nil
+}
 
-	// Ambiguity warning: multiple medium-confidence matches.
-	var mediumMatches []core.Result
-	for _, ar := range allResults {
-		if ar.Matched && !ar.Confidence.IsHigh(0.9) {
-			mediumMatches = append(mediumMatches, ar)
+func writeIdentity(w io.Writer, id *core.Identity) {
+	field := func(name, v string) {
+		if v != "" {
+			fmt.Fprintf(w, "      %-12s %s\n", name+":", v)
 		}
 	}
-	if len(mediumMatches) >= 2 {
-		_, _ = fmt.Fprintf(w, "\nWarning: %d protocols matched with medium confidence — manual review recommended\n", len(mediumMatches))
-		for _, ar := range mediumMatches {
-			_, _ = fmt.Fprintf(w, "  %-20s %.2f (%s)\n", ar.Protocol, ar.Confidence, ConfidenceLevel(ar.Confidence))
+	field("vendor", id.Vendor)
+	field("product", id.Product)
+	field("model", id.Model)
+	field("version", id.Version)
+	field("serial", id.Serial)
+	field("name", id.Name)
+	keys := make([]string, 0, len(id.Attributes))
+	for k := range id.Attributes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		field(k, id.Attributes[k])
+	}
+}
+
+func writeTrace(w io.Writer, r core.Report) {
+	for _, res := range r.Results {
+		if len(res.Exchanges) == 0 {
+			continue
+		}
+		fmt.Fprintf(w, "\nTrace %s:\n", res.Protocol.Slug())
+		for _, x := range res.Exchanges {
+			fmt.Fprintf(w, "  %s\n", x.Label)
+			if len(x.Probe) > 0 {
+				fmt.Fprintf(w, "    > %s\n", hex.EncodeToString(x.Probe))
+			}
+			if len(x.Response) > 0 {
+				fmt.Fprintf(w, "    < %s\n", hex.EncodeToString(x.Response))
+			}
 		}
 	}
-
-	return exitCodeForResult(r)
 }
 
-func writeTextSpecific(w io.Writer, protocol string, r core.Result) int {
-	if r.Matched {
-		_, _ = fmt.Fprintf(w, "%s: true\n", capitalizeFirst(protocol))
-		_, _ = fmt.Fprintf(w, "Confidence: %.2f (%s)\n", r.Confidence, ConfidenceLevel(r.Confidence))
-		_, _ = fmt.Fprintf(w, "Details: %s\n", r.Details)
-		return exitCodeForResult(r)
-	}
-	_, _ = fmt.Fprintf(w, "%s: false\n", capitalizeFirst(protocol))
-	return exitUnknown
-}
-
-// exitCodeForResult returns the appropriate exit code based on result.
-func exitCodeForResult(r core.Result) int {
-	if !r.Matched {
-		return exitUnknown
-	}
-	if r.Confidence.IsHigh(0.9) {
-		return exitDetected
-	}
-	return exitPartial
-}
-
-func capitalizeFirst(s string) string {
-	if len(s) == 0 {
-		return s
-	}
-	return string(s[0]-32) + s[1:]
-}
-
-// writeExchanges prints hex dumps of probe/response exchanges for a result.
-func writeExchanges(w io.Writer, r core.Result) {
-	if len(r.Exchanges) == 0 {
-		return
-	}
-	_, _ = fmt.Fprintf(w, "\n[debug] %s (matched=%v confidence=%.2f)\n", r.Protocol, r.Matched, r.Confidence)
-	for _, ex := range r.Exchanges {
-		_, _ = fmt.Fprintf(w, "  %s probe (%d bytes):\n", ex.Label, len(ex.Probe))
-		_, _ = fmt.Fprint(w, indentHexDump(ex.Probe))
-		_, _ = fmt.Fprintf(w, "  %s response (%d bytes):\n", ex.Label, len(ex.Response))
-		_, _ = fmt.Fprint(w, indentHexDump(ex.Response))
-	}
-}
-
-// indentHexDump returns a hex.Dump string with each line indented by 4 spaces.
-func indentHexDump(data []byte) string {
-	if len(data) == 0 {
-		return "    (empty)\n"
-	}
-	dump := hex.Dump(data)
-	var out string
-	for _, line := range splitLines(dump) {
-		if line != "" {
-			out += "    " + line + "\n"
+func writeTable(w io.Writer, r core.Report) error {
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "PROTOCOL\tMATCH\tCONF\tDETAILS")
+	for _, res := range r.Results {
+		match := "no"
+		if res.Matched {
+			match = "yes"
+		} else if res.Error != nil {
+			match = "err"
 		}
+		fmt.Fprintf(tw, "%s\t%s\t%.2f\t%s\n", res.Protocol.Slug(), match, res.Confidence, detail(res))
 	}
-	return out
+	return tw.Flush()
 }
 
-// splitLines splits a string into lines without importing strings.
-func splitLines(s string) []string {
-	var lines []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			lines = append(lines, s[start:i])
-			start = i + 1
+func writeJSON(w io.Writer, r core.Report, trace bool) error {
+	type exchange struct {
+		Label    string `json:"label"`
+		Probe    string `json:"probe,omitempty"`
+		Response string `json:"response,omitempty"`
+	}
+	type result struct {
+		Protocol    string            `json:"protocol"`
+		Matched     bool              `json:"matched"`
+		Confidence  core.Confidence   `json:"confidence"`
+		Variant     string            `json:"variant,omitempty"`
+		Details     string            `json:"details,omitempty"`
+		Evidence    []string          `json:"evidence,omitempty"`
+		Identity    *core.Identity    `json:"identity,omitempty"`
+		Fingerprint *core.Fingerprint `json:"fingerprint,omitempty"`
+		Error       string            `json:"error,omitempty"`
+		DurationMS  float64           `json:"durationMs"`
+		Exchanges   []exchange        `json:"exchanges,omitempty"`
+	}
+	conv := func(res core.Result) result {
+		out := result{
+			Protocol: res.Protocol.Slug(), Matched: res.Matched, Confidence: res.Confidence,
+			Variant: res.Variant, Details: res.Details, Evidence: res.Evidence,
+			Identity: res.Identity, Fingerprint: res.Fingerprint, Error: res.ErrorString(),
+			DurationMS: float64(res.Duration) / 1e6,
 		}
+		if trace {
+			for _, x := range res.Exchanges {
+				out.Exchanges = append(out.Exchanges, exchange{x.Label, hex.EncodeToString(x.Probe), hex.EncodeToString(x.Response)})
+			}
+		}
+		return out
 	}
-	if start < len(s) {
-		lines = append(lines, s[start:])
+	doc := struct {
+		Target     string   `json:"target"`
+		DurationMS float64  `json:"durationMs"`
+		Best       result   `json:"best"`
+		Results    []result `json:"results"`
+	}{Target: r.Target.String(), DurationMS: float64(r.Duration) / 1e6, Best: conv(r.Best)}
+	for _, res := range r.Results {
+		doc.Results = append(doc.Results, conv(res))
 	}
-	return lines
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(doc)
+}
+
+func label(r core.Result) string {
+	if r.Variant != "" {
+		return r.Protocol.Slug() + "/" + strings.ReplaceAll(strings.ToLower(r.Variant), " ", "-")
+	}
+	return r.Protocol.Slug()
+}
+
+func detail(r core.Result) string {
+	if r.Error != nil {
+		return r.Error.Error()
+	}
+	return r.Details
 }

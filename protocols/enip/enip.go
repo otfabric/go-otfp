@@ -1,193 +1,262 @@
 // SPDX-License-Identifier: MIT
 
-// Package enip implements EtherNet/IP (CIP over TCP) protocol fingerprinting.
+// Package enip fingerprints EtherNet/IP (the CIP encapsulation of ODVA) over
+// TCP and UDP.
 //
-// EtherNet/IP is the dominant industrial protocol in Rockwell/Allen-Bradley
-// environments. This detector sends a minimal RegisterSession encapsulation
-// command and validates the response header. No CIP messages, Forward Open
-// requests, or attribute reads are performed.
+// Detection sends a ListIdentity command (0x0063), which needs no session
+// and which every EtherNet/IP target answers with its CIP Identity object:
+// vendor, device type, product code, revision, serial number and product
+// name. Over UDP it is a single datagram; over TCP the encapsulation header
+// is validated and the CPF identity item decoded. The command identifier is
+// echoed, the status must be success and the sender context must match, so
+// unrelated services do not match.
+//
+// ListIdentity already carries the full identity, so detect and identify
+// modes send the same probe; identify mode adds the vendor and device-type
+// names and, over TCP, a RegisterSession to confirm the session layer.
 package enip
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 
 	"github.com/otfabric/go-otfp/core"
-	"github.com/otfabric/go-otfp/transport"
+	"github.com/otfabric/go-otfp/internal/fpx"
+	"github.com/otfabric/go-otfp/internal/wire"
 )
 
+const proto = core.ProtocolENIP
+
+// Encapsulation constants.
 const (
-	protocolName = core.ProtocolENIP
+	headerLen = 24
+	maxFrame  = 65535
 
-	// Encapsulation header constants.
-	cmdRegisterSession   uint16 = 0x0065
-	cmdUnregisterSession uint16 = 0x0066
-	cmdListIdentity      uint16 = 0x0063
+	cmdListServices    = 0x0004
+	cmdListIdentity    = 0x0063
+	cmdRegisterSession = 0x0065
 
-	// Encapsulation header size.
-	encapHeaderSize = 24 // Command(2) + Length(2) + Session(4) + Status(4) + Context(8) + Options(4)
+	statusSuccess = 0x0000
 
-	// Status codes.
-	statusSuccess uint32 = 0x00000000
-
-	maxResponseSize = 4096
+	itemCIPIdentity = 0x000C
 )
 
-// Fingerprinter detects EtherNet/IP protocol presence over TCP.
-type Fingerprinter struct{}
-
-// New creates a new EtherNet/IP fingerprinter.
-func New() *Fingerprinter {
-	return &Fingerprinter{}
+// Fingerprinter detects EtherNet/IP.
+type Fingerprinter struct {
+	network core.Network
 }
 
-// Name returns the protocol identifier.
-func (f *Fingerprinter) Name() core.Protocol {
-	return protocolName
+// New returns an EtherNet/IP fingerprinter over TCP.
+func New() *Fingerprinter { return &Fingerprinter{network: core.TCP} }
+
+// NewUDP returns an EtherNet/IP fingerprinter over UDP, which probes the
+// connectionless ListIdentity service.
+func NewUDP() *Fingerprinter { return &Fingerprinter{network: core.UDP} }
+
+// Info describes the fingerprinter.
+func (f *Fingerprinter) Info() core.Info {
+	return core.Info{
+		Protocol:      proto,
+		Network:       f.network,
+		Ports:         []int{44818, 2222},
+		Priority:      70,
+		Intrusiveness: core.Passive,
+		Description:   "encapsulation ListIdentity (0x0063); RegisterSession over TCP in identify mode",
+	}
 }
 
-// Priority returns the detection order (lower = tested first).
-func (f *Fingerprinter) Priority() int { return 30 }
-
-// Detect attempts to identify EtherNet/IP on the target by sending a
-// RegisterSession command and validating the response.
-func (f *Fingerprinter) Detect(ctx context.Context, target core.Target) (core.Result, error) {
-	conn, err := transport.Dial(ctx, target.Addr(), target.EffectiveTimeout())
+// Detect probes target.
+func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
+	if target.Network != f.network {
+		return core.NoMatch(proto), nil
+	}
+	b := fpx.New(proto)
+	s, err := wire.Dial(ctx, proto, target, opts)
 	if err != nil {
-		return core.NoMatch(protocolName), core.ClassifyDial(protocolName, target.Addr(), err)
+		return core.NoMatch(proto), err
 	}
-	defer conn.Close() //nolint:errcheck
+	defer s.Close() //nolint:errcheck
 
-	probe := buildProbe()
-
-	resp, err := conn.SendReceive(probe, maxResponseSize)
+	var ctxTag [8]byte
+	_, _ = rand.Read(ctxTag[:])
+	resp, err := s.RoundTrip("list-identity", encap(cmdListIdentity, 0, ctxTag, nil), framer, maxFrame)
 	if err != nil {
-		return core.NoMatch(protocolName), core.ClassifyIO(protocolName, target.Addr(), "sendreceive", err)
-	}
-
-	if isModbusErrorEcho(probe, resp) {
-		return core.NoMatch(protocolName).WithExchange("probe", probe, resp), nil
-	}
-
-	return validateResponse(resp).WithExchange("probe", probe, resp), nil
-}
-
-// buildProbe constructs an EtherNet/IP RegisterSession command.
-func buildProbe() []byte {
-	// Encapsulation header (24 bytes) + RegisterSession data (4 bytes).
-	msg := make([]byte, encapHeaderSize+4)
-
-	// Command: RegisterSession (0x0065).
-	binary.LittleEndian.PutUint16(msg[0:2], cmdRegisterSession)
-	// Length: 4 bytes (protocol version + option flags).
-	binary.LittleEndian.PutUint16(msg[2:4], 4)
-	// Session Handle: 0 (we're registering).
-	binary.LittleEndian.PutUint32(msg[4:8], 0)
-	// Status: 0.
-	binary.LittleEndian.PutUint32(msg[8:12], 0)
-	// Sender Context: 8 bytes of zero.
-	// Options: 0.
-
-	// RegisterSession data.
-	// Protocol version: 1.
-	binary.LittleEndian.PutUint16(msg[24:26], 1)
-	// Option flags: 0.
-	binary.LittleEndian.PutUint16(msg[26:28], 0)
-
-	return msg
-}
-
-// isModbusErrorEcho returns true if the response matches the Modbus error echo
-// pattern: same length, byte 7 has the error bit (0x80) set relative to the probe,
-// byte 8 is a valid Modbus exception code (1-11), and all other bytes are identical.
-func isModbusErrorEcho(probe, resp []byte) bool {
-	if len(probe) != len(resp) || len(probe) < 9 {
-		return false
-	}
-	for i := range probe {
-		if probe[i] != resp[i] {
-			if i == 7 && resp[7] == probe[7]|0x80 {
-				continue
-			}
-			if i == 8 && resp[8] >= 0x01 && resp[8] <= 0x0B {
-				continue
-			}
-			return false
+		if errors.Is(err, wire.ErrClosed) {
+			return b.Result("enip.listidentity", "connection closed", s), nil
 		}
+		return b.Result("enip.listidentity", "no EtherNet/IP response", s), err
 	}
-	return resp[7] == probe[7]|0x80
+	h, body, perr := parseEncap(resp)
+	if perr != nil {
+		if len(resp) >= 2 && binary.LittleEndian.Uint16(resp) == cmdListIdentity {
+			b.Score(core.ConfidenceLow, "ListIdentity command echoed, but "+perr.Error())
+		}
+		return b.Result("enip.listidentity", "not EtherNet/IP", s), nil
+	}
+	if h.command != cmdListIdentity {
+		b.Score(core.ConfidenceLow, fmt.Sprintf("encapsulation reply, but command 0x%04x", h.command))
+		return b.Result("enip.listidentity", "unexpected EtherNet/IP command", s), nil
+	}
+	if h.context != ctxTag {
+		b.Evidence("sender context not echoed")
+	}
+	if h.status != statusSuccess {
+		b.Score(core.ConfidenceHigh, fmt.Sprintf("ListIdentity returned status 0x%08x", h.status))
+		return b.Result("enip.listidentity", "EtherNet/IP error", s), nil
+	}
+	id, derr := parseIdentityItem(body)
+	if derr != nil {
+		b.Score(core.ConfidenceHigh, "valid ListIdentity encapsulation, but "+derr.Error())
+		return b.Result("enip.listidentity", "EtherNet/IP", s), nil
+	}
+	b.Score(core.ConfidenceCertain, fmt.Sprintf("ListIdentity: %s, product %q", vendorName(id.vendorID), id.productName))
+	f.fill(b, id)
+
+	if opts.Mode == core.ModeIdentify && f.network == core.TCP {
+		f.registerSession(b, s)
+	}
+	return b.Result("enip.listidentity", "EtherNet/IP device", s), nil
 }
 
-// validateResponse checks the response against EtherNet/IP encapsulation expectations.
-func validateResponse(resp []byte) core.Result {
-	if len(resp) < encapHeaderSize {
-		return core.NoMatch(protocolName)
+func (f *Fingerprinter) fill(b *fpx.Builder, id identity) {
+	b.Sig("vendor", fmt.Sprint(id.vendorID))
+	b.Sig("devtype", fmt.Sprintf("0x%02x", id.deviceType))
+	b.Sig("product", fmt.Sprint(id.productCode))
+	b.Sig("rev", fmt.Sprintf("%d.%d", id.majorRev, id.minorRev))
+	i := b.Identity()
+	i.Product = fpx.Clean(id.productName)
+	i.Vendor = vendorName(id.vendorID)
+	i.VendorID = fmt.Sprint(id.vendorID)
+	i.Version = fmt.Sprintf("%d.%d", id.majorRev&0x7f, id.minorRev)
+	if id.serial != 0 {
+		i.Serial = fmt.Sprintf("0x%08X", id.serial)
 	}
-
-	var confidence core.Confidence
-	details := ""
-
-	// Check 1: Command field.
-	command := binary.LittleEndian.Uint16(resp[0:2])
-	switch command {
-	case cmdRegisterSession:
-		confidence += 0.30
-		details = "RegisterSession response"
-	case cmdListIdentity:
-		confidence += 0.25
-		details = "ListIdentity response"
-	default:
-		// Check if it's any valid encapsulation command (0x0001-0x0070 range).
-		if command >= 0x0001 && command <= 0x0070 {
-			confidence += 0.15
-			details = fmt.Sprintf("Encapsulation command 0x%04X", command)
-		} else {
-			return core.NoMatch(protocolName)
-		}
+	i.Set("deviceType", deviceTypeName(id.deviceType))
+	i.Set("productCode", fmt.Sprint(id.productCode))
+	if id.majorRev&0x80 != 0 {
+		i.Set("revisionCompatibility", "set")
 	}
-
-	// Check 2: Status field.
-	status := binary.LittleEndian.Uint32(resp[8:12])
-	if status == statusSuccess {
-		confidence += 0.20
-		details += ", Status=Success"
-	} else if status <= 0x00000069 {
-		// Known EtherNet/IP status code range.
-		confidence += 0.10
-		details += fmt.Sprintf(", Status=0x%08X", status)
+	if id.status != 0 {
+		i.Set("status", fmt.Sprintf("0x%04x", id.status))
 	}
+	b.Meta("vendorId", fmt.Sprint(id.vendorID))
+	b.Meta("deviceType", fmt.Sprint(id.deviceType))
+}
 
-	// Check 3: Session handle.
-	sessionID := binary.LittleEndian.Uint32(resp[4:8])
-	if command == cmdRegisterSession && sessionID != 0 && status == statusSuccess {
-		confidence += 0.30
-		details += fmt.Sprintf(", SessionID=0x%08X", sessionID)
-	} else if command == cmdRegisterSession && sessionID == 0 && status != statusSuccess {
-		// Session 0 with error status is still valid EtherNet/IP.
-		confidence += 0.10
-		details += ", Session=0 (error response)"
+func (f *Fingerprinter) registerSession(b *fpx.Builder, s *wire.Session) {
+	var tag [8]byte
+	resp, err := s.RoundTrip("register-session", encap(cmdRegisterSession, 0, tag, []byte{0x01, 0x00, 0x00, 0x00}), framer, maxFrame)
+	if err != nil {
+		return
 	}
+	h, _, perr := parseEncap(resp)
+	if perr == nil && h.command == cmdRegisterSession && h.status == statusSuccess && h.session != 0 {
+		b.Evidence(fmt.Sprintf("session registered (handle 0x%08x)", h.session))
+		b.Sig("session", "ok")
+	}
+}
 
-	// Check 4: Length field consistency.
-	dataLen := binary.LittleEndian.Uint16(resp[2:4])
-	if int(dataLen)+encapHeaderSize <= len(resp)+8 {
-		confidence += 0.20
-		details += fmt.Sprintf(", DataLen=%d", dataLen)
-	}
+type header struct {
+	command uint16
+	length  uint16
+	session uint32
+	status  uint32
+	context [8]byte
+	options uint32
+}
 
-	if confidence > 1.0 {
-		confidence = 1.0
-	}
+// encap builds an encapsulation message.
+func encap(command uint16, session uint32, ctx [8]byte, data []byte) []byte {
+	b := make([]byte, headerLen+len(data))
+	binary.LittleEndian.PutUint16(b[0:], command)
+	binary.LittleEndian.PutUint16(b[2:], uint16(len(data)))
+	binary.LittleEndian.PutUint32(b[4:], session)
+	copy(b[12:20], ctx[:])
+	copy(b[24:], data)
+	return b
+}
 
-	if confidence < 0.3 {
-		return core.NoMatch(protocolName)
+var framer = wire.FixedHeader(headerLen, func(h []byte) int {
+	n := int(binary.LittleEndian.Uint16(h[2:4]))
+	if n > maxFrame-headerLen {
+		return -1
 	}
+	return headerLen + n
+})
 
-	result := core.Match(protocolName, confidence, details)
-	result.Fingerprint = &core.Fingerprint{
-		ID:        "enip.register_session",
-		Signature: details,
+func parseEncap(b []byte) (header, []byte, error) {
+	if len(b) < headerLen {
+		return header{}, nil, fmt.Errorf("%d octets is shorter than an encapsulation header", len(b))
 	}
-	return result
+	h := header{
+		command: binary.LittleEndian.Uint16(b[0:]),
+		length:  binary.LittleEndian.Uint16(b[2:]),
+		session: binary.LittleEndian.Uint32(b[4:]),
+		status:  binary.LittleEndian.Uint32(b[8:]),
+		options: binary.LittleEndian.Uint32(b[20:]),
+	}
+	copy(h.context[:], b[12:20])
+	if int(h.length)+headerLen != len(b) {
+		return h, nil, fmt.Errorf("length %d does not match %d octets", h.length, len(b))
+	}
+	return h, b[headerLen:], nil
+}
+
+type identity struct {
+	vendorID           uint16
+	deviceType         uint16
+	productCode        uint16
+	majorRev, minorRev uint8
+	status             uint16
+	serial             uint32
+	productName        string
+}
+
+// parseIdentityItem decodes the CPF of a ListIdentity reply and the CIP
+// Identity item it carries.
+func parseIdentityItem(body []byte) (identity, error) {
+	if len(body) < 2 {
+		return identity{}, fmt.Errorf("no CPF item count")
+	}
+	count := binary.LittleEndian.Uint16(body)
+	if count == 0 {
+		return identity{}, fmt.Errorf("ListIdentity reported no devices")
+	}
+	p := body[2:]
+	if len(p) < 4 {
+		return identity{}, fmt.Errorf("truncated CPF item")
+	}
+	typ := binary.LittleEndian.Uint16(p)
+	length := int(binary.LittleEndian.Uint16(p[2:]))
+	p = p[4:]
+	if typ != itemCIPIdentity {
+		return identity{}, fmt.Errorf("first CPF item is type 0x%04x, not CIP identity", typ)
+	}
+	if length > len(p) {
+		return identity{}, fmt.Errorf("CPF item length %d overruns %d octets", length, len(p))
+	}
+	item := p[:length]
+	// protocol version (2) + sockaddr_in (16) + identity.
+	if len(item) < 2+16+15 {
+		return identity{}, fmt.Errorf("identity item truncated")
+	}
+	q := item[18:]
+	id := identity{
+		vendorID:    binary.LittleEndian.Uint16(q[0:]),
+		deviceType:  binary.LittleEndian.Uint16(q[2:]),
+		productCode: binary.LittleEndian.Uint16(q[4:]),
+		majorRev:    q[6],
+		minorRev:    q[7],
+		status:      binary.LittleEndian.Uint16(q[8:]),
+		serial:      binary.LittleEndian.Uint32(q[10:]),
+	}
+	nameLen := int(q[14])
+	if 15+nameLen > len(q) {
+		return id, fmt.Errorf("product name overruns the item")
+	}
+	id.productName = string(q[15 : 15+nameLen])
+	return id, nil
 }

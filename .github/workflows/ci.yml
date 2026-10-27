@@ -16,5 +16,27 @@ jobs:
     uses: otfabric/.github/.github/workflows/go-ci.yml@v2
     with:
       codecov-name: go-otfp
+      # Coverage across the library packages, as make coverage measures it;
+      # the CLI, the generators and the test helpers are excluded. make
+      # coverpkg-check keeps this equal to COVER_PKGS.
+      coverpkg: github.com/otfabric/go-otfp,github.com/otfabric/go-otfp/core,github.com/otfabric/go-otfp/internal/fpx,github.com/otfabric/go-otfp/internal/httpx,github.com/otfabric/go-otfp/internal/iso,github.com/otfabric/go-otfp/internal/mbap,github.com/otfabric/go-otfp/internal/wire,github.com/otfabric/go-otfp/protocols/bacnet,github.com/otfabric/go-otfp/protocols/can,github.com/otfabric/go-otfp/protocols/dnp3,github.com/otfabric/go-otfp/protocols/enip,github.com/otfabric/go-otfp/protocols/iec104,github.com/otfabric/go-otfp/protocols/ieee2030,github.com/otfabric/go-otfp/protocols/mms,github.com/otfabric/go-otfp/protocols/modbus,github.com/otfabric/go-otfp/protocols/ocpp,github.com/otfabric/go-otfp/protocols/opcua,github.com/otfabric/go-otfp/protocols/openadr,github.com/otfabric/go-otfp/protocols/profinet,github.com/otfabric/go-otfp/protocols/s7,github.com/otfabric/go-otfp/protocols/sunspec
       go-versions: '["1.23","1.24","1.25","1.26"]'
     secrets: inherit
+
+  # The parsers must survive arbitrary bytes.
+  fuzz:
+    name: Fuzz
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.23.x"
+      - run: make fuzz FUZZTIME=15s
+      - name: Upload the failing inputs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-failures
+          path: "**/testdata/fuzz/"
+          if-no-files-found: warn

@@ -3,256 +3,137 @@
 package iec104
 
 import (
+	"bytes"
 	"context"
-	"net"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/otfabric/go-otfp/core"
+	"github.com/otfabric/go-otfp/internal/testsrv"
 )
 
-// startMockServer starts a TCP server that accepts one connection,
-// reads data, and responds with the provided response bytes.
-func startMockServer(t *testing.T, response []byte) (string, func()) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to start mock server: %v", err)
-	}
-
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
+// station answers like a controlled station with common address ca that
+// sends an end of initialisation after STARTDT.
+func station(ca uint16, speakFirst bool) testsrv.Handler {
+	first := speakFirst
+	return func(req []byte) ([]byte, bool) {
+		var out []byte
+		if first {
+			first = false
+			out = append(out, U(uTestAct)...)
 		}
-		defer conn.Close() //nolint:errcheck
-
-		buf := make([]byte, 1024)
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		_, _ = conn.Read(buf)
-
-		if response != nil {
-			_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-			_, _ = conn.Write(response)
+		for len(req) >= 6 {
+			n := int(req[1]) + 2
+			if n > len(req) {
+				break
+			}
+			a, err := Parse(req[:n])
+			req = req[n:]
+			if err != nil || a.Format != 'U' {
+				continue
+			}
+			switch a.U {
+			case uTestAct:
+				out = append(out, U(uTestCon)...)
+			case uStartAct:
+				out = append(out, U(uStartCon)...)
+				// M_EI_NA_1, COT 4 (initialised), CA, IOA 0, COI 0.
+				out = append(out, startByte, 0x0E, 0x00, 0x00, 0x00, 0x00,
+					70, 0x01, 0x04, 0x00, byte(ca), byte(ca>>8), 0, 0, 0, 0)
+			case uStopAct:
+				out = append(out, U(uStopCon)...)
+			}
 		}
-	}()
-
-	return ln.Addr().String(), func() { _ = ln.Close() }
-}
-
-func parseAddr(addr string) (string, int) {
-	host, portStr, _ := net.SplitHostPort(addr)
-	port := 0
-	for _, c := range portStr {
-		port = port*10 + int(c-'0')
+		return out, false
 	}
-	return host, port
 }
 
-func TestIEC104DetectStartdtCon(t *testing.T) {
-	// Valid STARTDT_CON response.
-	resp := []byte{0x68, 0x04, 0x0B, 0x00, 0x00, 0x00}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
+func TestDetect(t *testing.T) {
+	target := testsrv.TCP(t, station(1, false))
+	r, err := New().Detect(context.Background(), target, core.Options{})
+	if err != nil || !r.Matched || r.Confidence != core.ConfidenceCertain || r.Fingerprint.Signature != "testfr=con" {
+		t.Fatalf("%v %v", r, err)
+	}
+}
 
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
+func TestStationSpeaksFirst(t *testing.T) {
+	target := testsrv.TCP(t, station(1, true))
+	r, err := New().Detect(context.Background(), target, core.Options{})
+	if err != nil || !r.Matched || r.Confidence != core.ConfidenceCertain {
+		t.Fatalf("%v %v", r, err)
+	}
+}
+
+func TestIdentify(t *testing.T) {
+	target := testsrv.TCP(t, station(4711, false))
+	f := &Fingerprinter{Window: 300 * time.Millisecond}
+	r, err := f.Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify, Trace: true})
+	if err != nil || !r.Matched {
+		t.Fatalf("%v %v", r, err)
+	}
+	if r.Identity == nil || r.Identity.Attributes["commonAddress"] != "4711" || r.Identity.Attributes["asduTypes"] != "70" {
+		t.Fatalf("identity %+v", r.Identity)
+	}
+	if r.Fingerprint.Signature != "testfr=con;startdt=con" {
+		t.Fatalf("signature %q", r.Fingerprint.Signature)
+	}
+}
+
+func TestEchoIsNotIEC104(t *testing.T) {
+	target := testsrv.TCP(t, func(req []byte) ([]byte, bool) { return req, false })
+	target.Timeout = 300 * time.Millisecond
+	r, _ := New().Detect(context.Background(), target, core.Options{})
+	if r.Confidence == core.ConfidenceCertain {
+		t.Fatalf("echo matched: %v", r)
+	}
+}
+
+func TestNotIEC104(t *testing.T) {
+	target := testsrv.TCP(t, testsrv.Script([]byte("SSH-2.0-OpenSSH_9.6\r\n")))
+	r, err := New().Detect(context.Background(), target, core.Options{})
+	if err != nil || r.Matched || r.Confidence != 0 {
+		t.Fatalf("%v %v", r, err)
+	}
+	silent := testsrv.TCP(t, testsrv.Script())
+	silent.Timeout = 200 * time.Millisecond
+	_, err = New().Detect(context.Background(), silent, core.Options{})
+	var te *core.TimeoutError
+	if !errors.As(err, &te) {
+		t.Fatalf("silent: %v", err)
+	}
+}
+
+func TestParse(t *testing.T) {
+	good := [][]byte{U(uTestCon), {0x68, 0x04, 0x01, 0x00, 0x02, 0x00}, {0x68, 0x06, 0x02, 0x00, 0x00, 0x00, 0x01, 0x02}}
+	for _, b := range good {
+		if _, err := Parse(b); err != nil {
+			t.Fatalf("% x: %v", b, err)
+		}
+	}
+	bad := [][]byte{{0x68, 0x04, 0x47, 0, 0, 0}, {0x68, 0x05, 0x83, 0, 0, 0}, {0x68, 0x04, 0x83, 0, 1, 0}, {0x69, 4, 0x83, 0, 0, 0}}
+	for _, b := range bad {
+		if _, err := Parse(b); err == nil {
+			t.Fatalf("% x accepted", b)
+		}
+	}
+	if a, _ := Parse([]byte{0x68, 0x04, 0x06, 0x01, 0x00, 0x00}); a.SendSeq != 0x83 {
+		t.Fatalf("send sequence %d", a.SendSeq)
+	}
+	if !bytes.Equal(U(uStartAct), []byte{0x68, 4, 7, 0, 0, 0}) {
+		t.Fatal("STARTDT act")
+	}
+}
+
+func FuzzParse(f *testing.F) {
+	f.Add(U(uTestCon))
+	f.Add([]byte{0x68, 0x0E, 0, 0, 0, 0, 70, 1, 4, 0, 1, 0, 0, 0, 0, 0})
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if a, err := Parse(b); err == nil {
+			_, _, _ = asduHeader(a.ASDU)
+		}
+		if len(b) > 0 {
+			_ = Framer(b)
+		}
 	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if !result.Matched {
-		t.Error("Expected match for STARTDT_CON")
-	}
-	if result.Confidence < 0.9 {
-		t.Errorf("Confidence too low: %f", result.Confidence)
-	}
-	t.Logf("Result: %s", result)
-}
-
-func TestIEC104DetectTestfrAct(t *testing.T) {
-	// TESTFR_ACT from remote.
-	resp := []byte{0x68, 0x04, 0x43, 0x00, 0x00, 0x00}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if !result.Matched {
-		t.Error("Expected match for TESTFR_ACT")
-	}
-	t.Logf("Result: %s", result)
-}
-
-func TestIEC104DetectWrongStartByte(t *testing.T) {
-	resp := []byte{0xFF, 0x04, 0x0B, 0x00, 0x00, 0x00}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Should not match with wrong start byte")
-	}
-}
-
-func TestIEC104DetectInvalidLength(t *testing.T) {
-	// Length = 0 (invalid).
-	resp := []byte{0x68, 0x00, 0x0B, 0x00, 0x00, 0x00}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	// Start byte matches but length is wrong.
-	if result.Matched && result.Confidence >= 0.9 {
-		t.Errorf("Should not have high confidence with invalid length: %f", result.Confidence)
-	}
-	t.Logf("Result: %s", result)
-}
-
-func TestIEC104DetectTruncatedResponse(t *testing.T) {
-	resp := []byte{0x68, 0x04}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Should not match truncated response")
-	}
-}
-
-func TestIEC104DetectNoResponse(t *testing.T) {
-	addr, cleanup := startMockServer(t, nil)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	_, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 1 * time.Second,
-	})
-	_ = err
-}
-
-func TestIEC104DetectConnectionRefused(t *testing.T) {
-	fp := New()
-	_, err := fp.Detect(context.Background(), core.Target{
-		IP:      "127.0.0.1",
-		Port:    1,
-		Timeout: 1 * time.Second,
-	})
-	if err == nil {
-		t.Error("Expected error for connection refused")
-	}
-}
-
-func TestIEC104DetectRandomBinary(t *testing.T) {
-	resp := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Random binary should not match IEC 104")
-	}
-}
-
-func TestIEC104DetectSFormat(t *testing.T) {
-	// S-format response: bits 0,1 = 01.
-	resp := []byte{0x68, 0x04, 0x01, 0x00, 0x02, 0x00}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if !result.Matched {
-		t.Error("Expected match for S-format response")
-	}
-	t.Logf("Result: %s", result)
-}
-
-func TestIEC104Name(t *testing.T) {
-	fp := New()
-	if fp.Name() != core.ProtocolIEC104 {
-		t.Errorf("Name() = %s, want %s", fp.Name(), core.ProtocolIEC104)
-	}
-}
-
-func TestBuildProbe(t *testing.T) {
-	probe := buildProbe()
-	if len(probe) != 6 {
-		t.Fatalf("probe length = %d, want 6", len(probe))
-	}
-	if probe[0] != 0x68 {
-		t.Errorf("start byte = 0x%02X, want 0x68", probe[0])
-	}
-	if probe[1] != 0x04 {
-		t.Errorf("length = 0x%02X, want 0x04", probe[1])
-	}
-	if probe[2] != 0x07 {
-		t.Errorf("control = 0x%02X, want 0x07 (STARTDT_ACT)", probe[2])
-	}
 }
