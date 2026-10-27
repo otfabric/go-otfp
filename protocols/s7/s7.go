@@ -118,6 +118,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		if err != nil {
 			trace = append(trace, s.Exchanges()...)
 			_ = s.Close()
+			s = nil
 			if errors.Is(err, wire.ErrClosed) {
 				continue // a refused TSAP, often as a plain close
 			}
@@ -143,7 +144,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		_ = s.Close()
 		s = nil
 	}
-	if s == nil {
+	if s == nil || tsap == 0 {
 		if refused {
 			b.Score(core.ConfidenceLow, "ISO-on-TCP endpoint refusing the S7 TSAPs")
 		}

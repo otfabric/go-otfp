@@ -44,6 +44,11 @@ an `OTFP_<PROTOCOL>_IMAGE` environment variable.
 - **Host Layer-2 access** — PROFINET DCP Identify runs over raw Ethernet and
   needs privileges and a local interface; go-otfp fingerprints the UDP
   DCE/RPC endpoint, which the suite covers.
-- **Provisioned PKI** — IEEE 2030.5 servers require a full mutual-TLS setup;
-  the fingerprinter's TLS-shape detection is covered by unit tests with
-  self-signed ECDSA certificates.
+The suite covers 11 reference servers: pymodbus (Modbus), opendnp3 (DNP3),
+lib60870 (IEC 104), Snap7 (S7comm), open62541 (OPC UA), OpENer
+(EtherNet/IP), bacnet-stack (BACnet/IP), The Mobility House ocpp (OCPP),
+OpenLEADR (OpenADR 3), and GridAPPS-D and Envoy (IEEE 2030.5). Detection and,
+where the server provides it, identity are asserted. The images that need
+fixtures or a PKI (Snap7, open62541, the IEEE 2030.5 servers) use the
+sibling `*-interop` repositories' own fixtures and PKI helper, and are
+skipped when those are not checked out beside go-otfp.

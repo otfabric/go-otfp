@@ -95,3 +95,47 @@ func TestSplitAndChunkedBodies(t *testing.T) {
 		})
 	}
 }
+
+// A caller-supplied Connection header replaces the default "close".
+func TestConnectionHeaderKept(t *testing.T) {
+	var got string
+	target := testsrv.Raw(t, func(c net.Conn) {
+		buf := make([]byte, 1024)
+		_ = c.SetReadDeadline(time.Now().Add(time.Second))
+		n, _ := c.Read(buf)
+		got = string(buf[:n])
+		_, _ = c.Write([]byte("HTTP/1.1 204 No Content\r\n\r\n"))
+	})
+	s, _ := wire.Dial(context.Background(), core.ProtocolOCPP, target, core.Options{})
+	defer s.Close()
+	resp, err := httpx.Request(s, "x", "GET", "h", "/", map[string]string{"Connection": "keep-alive"}, 64)
+	if err != nil || resp.Status != 204 || strings.Contains(got, "Connection: close") || !strings.Contains(got, "Connection: keep-alive") {
+		t.Fatalf("%v %v\n%s", resp, err, got)
+	}
+}
+
+func TestFramerEdges(t *testing.T) {
+	cases := map[string]int{
+		"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok":                                             0, // checked below
+		"HTTP/1.1 304 Not Modified\r\nContent-Length: 99\r\n\r\n":                                    len("HTTP/1.1 304 Not Modified\r\nContent-Length: 99\r\n\r\n"),
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3;ext=1\r\nabc\r\n0\r\nX-T: 1\r\n\r\n": len("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3;ext=1\r\nabc\r\n0\r\nX-T: 1\r\n\r\n"),
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\n":                                -1,
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nab":                               0,
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n0\r\nX-T: 1\r\n":                       0,
+		"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3":                                     0,
+		"HTTP/1.1 200 OK\r\nbroken header\r\nContent-Length: 1\r\n\r\nx":                             len("HTTP/1.1 200 OK\r\nbroken header\r\nContent-Length: 1\r\n\r\nx"),
+		"SSH-2.0-OpenSSH": -1,
+	}
+	for in, want := range cases {
+		got := httpx.Framer([]byte(in))
+		if in == "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok" {
+			want = len(in)
+		}
+		if got != want {
+			t.Errorf("%q: %d, want %d", in, got, want)
+		}
+	}
+	if httpx.Framer([]byte(strings.Repeat("A", 20000))) != -1 {
+		t.Error("oversized header block")
+	}
+}
