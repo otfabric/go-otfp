@@ -117,8 +117,11 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 			status = &h
 			break
 		}
-		if b.Confidence() == 0 && len(resp) > 0 && (len(resp) < 2 || resp[0] != start0 || resp[1] != start1) {
-			break // not DNP3 at all
+		// Read on only past a valid DNP3 frame that was not the link
+		// status (another station's traffic); after a malformed frame
+		// the stream is out of sync, and anything else is not DNP3.
+		if _, perr := ParseHeader(resp); perr != nil {
+			break
 		}
 		resp, err = s.Next("frame", Framer, maxFrame)
 	}

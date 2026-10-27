@@ -5,6 +5,7 @@ package profinet
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
@@ -90,13 +91,22 @@ func TestFaultAndRejectMatch(t *testing.T) {
 }
 
 func TestActivityNotEchoed(t *testing.T) {
-	// A DCE/RPC-shaped reply that does not echo our activity UUID is not a
-	// confirmed PROFINET match.
+	// A DCE/RPC reply for another activity is not our answer: it is
+	// discarded, and with nothing else arriving the probe times out.
 	resp := unhex(im0Response) // keeps its own placeholder activity
 	target := testsrv.UDP(t, testsrv.Script(resp))
-	r, err := New().Detect(context.Background(), target, core.Options{})
-	if err != nil || r.Matched || r.Confidence != core.ConfidenceLow {
+	target.Timeout = 300 * time.Millisecond
+	r, err := New().Detect(context.Background(), target, core.Options{Trace: true})
+	var te *core.TimeoutError
+	if r.Matched || !errors.As(err, &te) {
 		t.Fatalf("%v %v", r, err)
+	}
+	discarded := false
+	for _, x := range r.Exchanges {
+		discarded = discarded || x.Label == "discarded"
+	}
+	if !discarded {
+		t.Fatal("the stray reply should be traced as discarded")
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/fpx"
@@ -158,7 +159,7 @@ func (f *Fingerprinter) identify(b *fpx.Builder, s *wire.Session, endpoint strin
 		id.Set("securityPolicies", join(policies))
 		b.Sig("policies", join(policies))
 	}
-	b.Evidence(fmt.Sprintf("GetEndpoints: %d endpoints", len(eps)))
+	b.Evidence(fmt.Sprintf("GetEndpoints: %d endpoint(s)", len(eps)))
 }
 
 // ---- UACP framing ----
@@ -243,13 +244,13 @@ func fourByteNodeID(id uint16) []byte { return []byte{0x01, 0x00, byte(id), byte
 // token and the given timeout.
 func requestHeader(handle uint32, timeout uint32) []byte {
 	var b []byte
-	b = append(b, 0x00, 0x00)                  // authentication token: two-byte null NodeId
-	b = binary.LittleEndian.AppendUint64(b, 0) // timestamp
-	b = le32(b, handle)                        // request handle
-	b = le32(b, 0)                             // return diagnostics
-	b = str(b, "")                             // audit entry id
-	b = le32(b, timeout)                       // timeout hint
-	b = append(b, 0x00, 0x00, 0x00)            // additional header: null NodeId + encoding 0
+	b = append(b, 0x00, 0x00)                                     // authentication token: two-byte null NodeId
+	b = binary.LittleEndian.AppendUint64(b, dateTime(time.Now())) // timestamp: servers reject 0 (BadInvalidTimestamp)
+	b = le32(b, handle)                                           // request handle
+	b = le32(b, 0)                                                // return diagnostics
+	b = str(b, "")                                                // audit entry id
+	b = le32(b, timeout)                                          // timeout hint
+	b = append(b, 0x00, 0x00, 0x00)                               // additional header: null NodeId + encoding 0
 	return b
 }
 
@@ -288,6 +289,13 @@ func getEndpoints(channelID, tokenID uint32, endpoint string) []byte {
 	sb = le32(sb, 0)       // locale ids: array length 0
 	sb = le32(sb, 0)       // profile uris: array length 0
 	return message(msgMSG, sb)
+}
+
+// dateTime encodes t as an OPC UA DateTime: 100 ns intervals since
+// 1601-01-01 UTC.
+func dateTime(t time.Time) uint64 {
+	const epochDelta = 116444736000000000 // 1601-01-01 to 1970-01-01, in 100 ns
+	return uint64(t.UnixNano()/100) + epochDelta
 }
 
 func stripSecurityHeader(typ string, body []byte) ([]byte, bool) {
@@ -407,6 +415,9 @@ func parseEndpoints(resp []byte) ([]endpoint, error) {
 		return nil, fmt.Errorf("no service id")
 	}
 	if id == idServiceFault {
+		if len(rest) >= 16 {
+			return nil, fmt.Errorf("service fault 0x%08x", binary.LittleEndian.Uint32(rest[12:]))
+		}
 		return nil, fmt.Errorf("service fault")
 	}
 	if id != idGetEndpointsResponse {

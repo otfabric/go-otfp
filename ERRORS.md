@@ -20,6 +20,13 @@ recorded in that result's `Error` field, and `Scan` itself returns an error
 only for an invalid target or when no fingerprinter applies
 (`ErrNoFingerprinters`).
 
+A fingerprinter's error is **always a transport error** — `TimeoutError`,
+`ConnectionError` or `DetectError`. A peer that closes the connection, sends
+garbage or a reply that does not frame as the protocol is a NoMatch with a
+nil error, never an error: it was reachable and is simply not this protocol.
+The end-to-end fuzz targets and the hostile-server tests enforce this for
+every built-in fingerprinter.
+
 ## Typed errors
 
 All wrap an underlying cause (`errors.As` / `Unwrap` work) and name the
@@ -49,7 +56,8 @@ its own I/O, and the helpers `core.ClassifyDial(protocol, addr, err)` and
 
 ## In the CLI
 
-`otprobe` maps the outcome to an exit code: `0` detected (≥ high
-confidence), `1` no match, `2` a connection or timeout error on any probe,
-`3` bad arguments, `4` matched below the high-confidence threshold. The
-`--format json` output carries each result's `error` string.
+`otprobe` maps the outcome to an exit code — `0` detected, `1` no match,
+`2` usage, `3` invalid input, `4` unreachable, `5` timeout, `7` partial,
+`10` interrupted or internal — and renders fatal errors as one `error:` line,
+or one JSON `error` object with `--format json`. See
+[docs/exitcodes.md](docs/exitcodes.md).

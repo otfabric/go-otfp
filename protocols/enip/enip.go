@@ -82,7 +82,18 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 
 	var ctxTag [8]byte
 	_, _ = rand.Read(ctxTag[:])
-	resp, err := s.RoundTrip("list-identity", encap(cmdListIdentity, 0, ctxTag, nil), framer, maxFrame)
+	probe := encap(cmdListIdentity, 0, ctxTag, nil)
+	var resp []byte
+	if f.network == core.UDP {
+		// Over UDP, discard encapsulation replies carrying another sender
+		// context (answers to other scanners, or late duplicates).
+		resp, err = s.RoundTripUDP("list-identity", probe, maxFrame, func(dg []byte) bool {
+			h, _, perr := parseEncap(dg)
+			return perr != nil || h.context == ctxTag
+		})
+	} else {
+		resp, err = s.RoundTrip("list-identity", probe, framer, maxFrame)
+	}
 	if err != nil {
 		if errors.Is(err, wire.ErrClosed) {
 			return b.Result("enip.listidentity", "connection closed", s), nil

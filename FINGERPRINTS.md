@@ -38,8 +38,9 @@ can exclude the noisier ones:
 
 - **Passive** — a standard connection handshake or discovery request only.
 - **ReadOnly** — also reads application data (SunSpec's holding-register
-  marker; the OpenADR 2.0b registration POST). Skipped unless the scan allows
-  read-only probes.
+  marker). Skipped unless the scan allows read-only probes. A passive
+  fingerprinter may still take an optional read-only step only when the scan
+  allows it: Modbus's FC 03 fallback, OpenADR's 2.0b registration POST.
 
 ## Per-protocol
 
@@ -177,7 +178,7 @@ When the handshake can be completed (an anonymous or misconfigured server),
 GET /dcap and the `urn:ieee:std:2030.5:ns` DeviceCapability document are
 **certain**.
 
-### OpenADR (`openadr`, TCP, read-only)
+### OpenADR (`openadr`, TCP, passive)
 
 OpenADR 3 is a REST/JSON API: GET /auth/server returns the VTN's OAuth2
 tokenURL (**certain**); GET /programs returns 401 Bearer with a JSON problem

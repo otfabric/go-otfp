@@ -39,6 +39,9 @@ it, sorts the results and picks the best.
   refines Modbus) still runs and is preferred as the best match on a tie.
 - **Stop on refused** ends a TCP scan when a connection is refused: nothing
   listens on the port, so no other TCP fingerprinter can succeed.
+- **Parallel early stop** — each probe has its own context: an early stop
+  cancels the probes still running except refinements of the matched
+  protocol, and the probes it cancelled are not reported as results.
 - **Resilience** — each `Detect` runs under a panic recovery, so one broken
   fingerprinter becomes an error result instead of taking the scan down. The
   `Observer` and `Logger` receive progress without affecting results.
@@ -63,11 +66,21 @@ A `Session` wraps a dialled TCP, TLS or UDP connection and provides:
 - **Framed reads** — a `Framer` tells a read when a whole protocol frame has
   arrived, so detection does not rely on one `Read` returning a complete
   message; bytes past the frame are kept for the next read.
-- **UDP round-trips** with retransmission for lossy datagram protocols.
+- **An idle gap** — once a frame has started, the rest must follow within
+  max(250 ms, timeout/4) (and the overall deadline), so a peer that sent a
+  short reply does not cost the whole timeout.
+- **UDP round-trips** with retransmission for lossy datagram protocols, and
+  correlation (`RoundTripUDP`): replies that do not answer the request — a
+  late answer to an earlier one, a duplicate, another peer's traffic — are
+  discarded by invoke ID, sender context or activity UUID instead of being
+  taken as the answer.
 - **Error classification** — dial and I/O failures become `TimeoutError`,
   `ConnectionError` or `DetectError`, and `ErrClosed` marks a peer that
   closed without answering.
-- **Context cancellation** — a cancelled scan unblocks pending I/O.
+- **Context cancellation** — a cancelled scan unblocks pending I/O, and
+  every operation re-checks the context after arming its own deadline (which
+  would otherwise override the past deadline set on cancellation); the
+  context's deadline caps every per-operation timeout.
 - **Tracing** — every probe/response pair is recorded when `Options.Trace`
   is set, surfacing in `Result.Exchanges`.
 

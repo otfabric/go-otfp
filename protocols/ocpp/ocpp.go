@@ -94,10 +94,11 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		"Sec-WebSocket-Protocol": subprotocols,
 	}, 4096)
 	if err != nil {
-		if b.Confidence() == 0 {
+		if wire.IsTransport(err) {
 			return b.Result("ocpp.ws", "no HTTP response", s), err
 		}
-		return b.Result("ocpp.ws", "no OCPP response", s), nil
+		// Closed, or not HTTP at all: not an OCPP CSMS.
+		return b.Result("ocpp.ws", "not HTTP", s), nil
 	}
 
 	switch resp.Status {

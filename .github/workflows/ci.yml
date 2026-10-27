@@ -23,7 +23,20 @@ jobs:
       go-versions: '["1.23","1.24","1.25","1.26"]'
     secrets: inherit
 
-  # The parsers must survive arbitrary bytes.
+  # The self-contained examples must keep running as they are.
+  examples:
+    name: Examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: "1.23.x"
+      - run: make build examples
+
+  # The parsers, and every fingerprinter end to end, must survive arbitrary
+  # bytes (FuzzDetect drives Detect against a server replying with fuzzed
+  # data and checks the Fingerprinter contract).
   fuzz:
     name: Fuzz
     runs-on: ubuntu-latest

@@ -92,7 +92,12 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	var activity uuidT
 	_, _ = rand.Read(activity[:])
 	probe := readImplicit(activity, indexIM0)
-	resp, err := s.RoundTrip("read-implicit", probe, framer, maxUDP)
+	// Discard DCE/RPC replies for other activities (late answers, other
+	// clients); keep anything else for judging.
+	resp, err := s.RoundTripUDP("read-implicit", probe, maxUDP, func(dg []byte) bool {
+		h, _, perr := parseHeader(dg)
+		return perr != nil || h.activity == activity
+	})
 	if err != nil {
 		if b.Confidence() == 0 {
 			return b.Result("profinet.rpc", "no PROFINET response", s), err
@@ -222,20 +227,6 @@ func readReqBlock(index uint16) []byte {
 	binary.BigEndian.PutUint16(b[2:], uint16(len(b)-4))
 	return b
 }
-
-var framer = wire.FixedHeader(headerLen, func(h []byte) int {
-	if h[0] != rpcVersion {
-		return -1
-	}
-	if h[4] != drepLittle && h[4] != 0x00 {
-		return -1
-	}
-	n := headerLen + int(order(h[4]).Uint16(h[74:76]))
-	if n > maxUDP {
-		return -1
-	}
-	return n
-})
 
 func parseHeader(b []byte) (header, []byte, error) {
 	if len(b) < headerLen {

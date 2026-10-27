@@ -156,3 +156,49 @@ type obs struct {
 
 func (o obs) OnStart(Protocol, Target) { o.onStart() }
 func (o obs) OnResult(Result)          { o.onResult() }
+
+// In parallel mode an early stop must not cancel a refinement of the
+// matched protocol (SunSpec over Modbus), which sequential mode runs too.
+func TestParallelEarlyStopKeepsRefinement(t *testing.T) {
+	base := &fakeFP{info: Info{Protocol: ProtocolModbus, Network: TCP, Priority: 1}, result: mod(ProtocolModbus, ConfidenceCertain)}
+	refine := &fakeFP{info: Info{Protocol: ProtocolSunSpec, Network: TCP, Priority: 2, Refines: ProtocolModbus},
+		result: mod(ProtocolSunSpec, ConfidenceCertain), delay: 100 * time.Millisecond}
+	cfg := DefaultEngineConfig()
+	cfg.Parallel = true
+	rep, _ := NewEngine(NewRegistry().MustRegister(base, refine), cfg).Scan(context.Background(), Target{Host: "127.0.0.1", Port: 502})
+	if rep.Best.Protocol != ProtocolSunSpec {
+		t.Fatalf("best %s; the refinement was cancelled: %v", rep.Best.Protocol, rep.Results)
+	}
+}
+
+// An early stop cancels unrelated probes still running, promptly, and their
+// self-inflicted cancellations are not reported as results.
+func TestParallelEarlyStopDropsCancelled(t *testing.T) {
+	fast := &fakeFP{info: Info{Protocol: ProtocolModbus, Network: TCP, Priority: 1}, result: mod(ProtocolModbus, ConfidenceCertain)}
+	slow := &fakeFP{info: Info{Protocol: ProtocolS7, Network: TCP, Priority: 2}, result: mod(ProtocolS7, ConfidenceCertain), delay: 5 * time.Second}
+	cfg := DefaultEngineConfig()
+	cfg.Parallel = true
+	start := time.Now()
+	rep, _ := NewEngine(NewRegistry().MustRegister(fast, slow), cfg).Scan(context.Background(), Target{Host: "127.0.0.1", Port: 502})
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("scan took %v: the slow probe was not cancelled", d)
+	}
+	for _, r := range rep.Results {
+		if r.Protocol == ProtocolS7 {
+			t.Fatalf("cancelled probe reported: %v", r)
+		}
+	}
+}
+
+// A caller's cancellation is still reported (it is not the engine's own).
+func TestParallelCallerCancel(t *testing.T) {
+	slow := &fakeFP{info: Info{Protocol: ProtocolS7, Network: TCP}, result: NoMatch(ProtocolS7), delay: 5 * time.Second}
+	cfg := DefaultEngineConfig()
+	cfg.Parallel = true
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	rep, _ := NewEngine(NewRegistry().MustRegister(slow), cfg).Scan(ctx, Target{Host: "127.0.0.1", Port: 102})
+	if len(rep.Results) != 1 || rep.Results[0].Error == nil {
+		t.Fatalf("want the deadline error reported, got %v", rep.Results)
+	}
+}

@@ -317,14 +317,24 @@ func (e *Engine) runSequential(ctx context.Context, target Target, plan []Finger
 }
 
 func (e *Engine) runParallel(ctx context.Context, target Target, plan []Fingerprinter) []Result {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
 	var (
-		mu      sync.Mutex
-		results []Result
-		wg      sync.WaitGroup
+		mu       sync.Mutex
+		results  []Result
+		wg       sync.WaitGroup
+		stopped  bool
+		refine   = ProtocolUnknown
+		running  = map[int]context.CancelFunc{} // by plan index
+		infos    = make([]Info, len(plan))
+		killedBy = map[int]bool{} // fingerprinters the early stop cancelled
 	)
+	for i, fp := range plan {
+		infos[i] = fp.Info()
+	}
+	// skip reports whether, after a stop, fingerprinter i must not run:
+	// only refinements of the matched protocol continue. Call with mu held.
+	skip := func(i int) bool {
+		return stopped && (refine == ProtocolUnknown || infos[i].Refines != refine)
+	}
 	var sem chan struct{}
 	if e.config.MaxConcurrency > 0 {
 		sem = make(chan struct{}, e.config.MaxConcurrency)
@@ -342,22 +352,49 @@ func (e *Engine) runParallel(ctx context.Context, target Target, plan []Fingerpr
 				break
 			}
 		}
+		mu.Lock()
+		if skip(i) {
+			mu.Unlock()
+			if sem != nil {
+				<-sem
+			}
+			continue
+		}
+		fctx, cancel := context.WithCancel(ctx)
+		running[i] = cancel
+		mu.Unlock()
+
 		wg.Add(1)
-		go func(fp Fingerprinter) {
+		go func(i int, fp Fingerprinter) {
 			defer wg.Done()
+			defer cancel()
 			if sem != nil {
 				defer func() { <-sem }()
 			}
-			r := e.run(ctx, fp, target)
+			r := e.run(fctx, fp, target)
+
 			mu.Lock()
-			results = append(results, r)
-			mu.Unlock()
-			// Refinements are not waited for in parallel mode: they
-			// were started alongside.
-			if stop, _ := e.stopAfter(r, target); stop {
-				cancel()
+			defer mu.Unlock()
+			delete(running, i)
+			if killedBy[i] && errors.Is(r.Error, context.Canceled) {
+				return // cancelled by our own early stop: not a result
 			}
-		}(fp)
+			results = append(results, r)
+			if stopped {
+				return
+			}
+			if stop, ref := e.stopAfter(r, target); stop {
+				stopped, refine = true, ref
+				// Cancel what is still running, except refinements of
+				// the protocol that just matched.
+				for j, c := range running {
+					if skip(j) {
+						killedBy[j] = true
+						c()
+					}
+				}
+			}
+		}(i, fp)
 	}
 	wg.Wait()
 	return results

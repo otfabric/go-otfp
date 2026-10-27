@@ -94,6 +94,9 @@ type reader struct {
 
 var errException = errors.New("exception")
 
+// errNotModbus marks a reply that is not a Modbus answer to the request.
+var errNotModbus = errors.New("not a Modbus reply")
+
 // read returns qty registers at addr, or errException with the code.
 func (r *reader) read(label string, fc byte, addr, qty uint16) ([]uint16, byte, error) {
 	r.tid++
@@ -103,16 +106,19 @@ func (r *reader) read(label string, fc byte, addr, qty uint16) ([]uint16, byte, 
 	}
 	m, err := mbap.Parse(resp)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("%w: %v", errNotModbus, err)
 	}
 	if err := m.Check(r.tid, fc); err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("%w: %v", errNotModbus, err)
 	}
 	if m.IsException() {
 		return nil, m.Exception, errException
 	}
 	regs, err := mbap.Registers(m.Data, int(qty))
-	return regs, 0, err
+	if err != nil {
+		return nil, 0, fmt.Errorf("%w: %v", errNotModbus, err)
+	}
+	return regs, 0, nil
 }
 
 // Detect probes target.
@@ -127,10 +133,11 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 
 	base, fc, modbus, err := f.findMarker(ctx, r)
 	if err != nil && !modbus {
-		if errors.Is(err, wire.ErrClosed) {
-			return b.Result("sunspec.marker", "connection closed", s), nil
+		if wire.IsTransport(err) {
+			return b.Result("sunspec.marker", "no Modbus response", s), err
 		}
-		return b.Result("sunspec.marker", "no Modbus response", s), err
+		// Closed, or a reply that is not Modbus: not SunSpec.
+		return b.Result("sunspec.marker", "not Modbus", s), nil
 	}
 	if fc == 0 {
 		if modbus {
