@@ -66,6 +66,9 @@ func (b *Builder) Meta(key, value string) {
 // Variant sets the variant.
 func (b *Builder) Variant(v string) { b.variant = v }
 
+// VariantSet reports whether a variant has been set.
+func (b *Builder) VariantSet() bool { return b.variant != "" }
+
 // Identity returns the identity being filled.
 func (b *Builder) Identity() *core.Identity { return &b.identity }
 
