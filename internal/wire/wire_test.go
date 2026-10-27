@@ -141,3 +141,104 @@ func TestUDPRetries(t *testing.T) {
 		t.Fatalf("%q %v", resp, err)
 	}
 }
+
+// A cancellation that happens before an operation arms its deadline must
+// still stop it: the operation's own SetDeadline would otherwise override the
+// past deadline set on cancel and wait out the full timeout.
+func TestCancelBeforeOperation(t *testing.T) {
+	target := testsrv.TCP(t, testsrv.Script())
+	target.Timeout = 5 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	s, err := wire.Dial(ctx, core.ProtocolModbus, target, core.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	cancel()
+	start := time.Now()
+	_, err = s.RoundTrip("x", []byte("hi"), lenFramer, 64)
+	if err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("cancelled read took %v", d)
+	}
+	// And every later step returns at once too.
+	start = time.Now()
+	if _, err := s.Next("y", lenFramer, 64); err == nil || time.Since(start) > time.Second {
+		t.Fatalf("second step: %v after %v", err, time.Since(start))
+	}
+}
+
+// The scan's overall deadline caps every per-operation timeout.
+func TestContextDeadlineCapsTimeout(t *testing.T) {
+	target := testsrv.TCP(t, testsrv.Script())
+	target.Timeout = 5 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	s, err := wire.Dial(ctx, core.ProtocolModbus, target, core.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	start := time.Now()
+	_, err = s.RoundTrip("x", []byte("hi"), lenFramer, 64)
+	var te *core.TimeoutError
+	if !errors.As(err, &te) || time.Since(start) > 2*time.Second {
+		t.Fatalf("want a prompt TimeoutError, got %v after %v", err, time.Since(start))
+	}
+}
+
+// A stray datagram (a late answer to an earlier request) is discarded by
+// RoundTripUDP instead of being taken as the answer.
+func TestRoundTripUDPDiscardsStray(t *testing.T) {
+	target := testsrv.UDP(t, func(req []byte) ([]byte, bool) { return nil, false })
+	// Replace the silent server with one that sends a stray then the answer.
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	go func() {
+		buf := make([]byte, 64)
+		n, from, err := pc.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		_, _ = pc.WriteTo([]byte("stray"), from)
+		_, _ = pc.WriteTo(append([]byte("ok:"), buf[:n]...), from)
+	}()
+	_, port, _ := net.SplitHostPort(pc.LocalAddr().String())
+	target.Port = atoi(port)
+	s := dial(t, target, core.Options{Trace: true})
+	defer s.Close()
+	resp, err := s.RoundTripUDP("x", []byte("req"), 64, func(b []byte) bool { return len(b) > 3 && string(b[:3]) == "ok:" })
+	if err != nil || string(resp) != "ok:req" {
+		t.Fatalf("%q %v", resp, err)
+	}
+}
+
+func atoi(s string) int {
+	n := 0
+	for _, c := range s {
+		n = n*10 + int(c-'0')
+	}
+	return n
+}
+
+// A peer that starts a frame and never finishes it costs the idle gap, not
+// the whole timeout; the partial frame is returned for judging.
+func TestIdleGapAfterPartialFrame(t *testing.T) {
+	target := testsrv.TCP(t, testsrv.Script([]byte{0, 20, 'p', 'a', 'r', 't'})) // promises 20, sends 4
+	target.Timeout = 5 * time.Second
+	s := dial(t, target, core.Options{})
+	defer s.Close()
+	start := time.Now()
+	resp, err := s.RoundTrip("x", []byte("hi"), lenFramer, 64)
+	if err != nil || string(resp[2:]) != "part" {
+		t.Fatalf("%q %v", resp, err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("partial frame took %v; the idle gap is %v", d, max(250*time.Millisecond, target.Timeout/4))
+	}
+}

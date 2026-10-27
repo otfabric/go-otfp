@@ -61,3 +61,37 @@ func TestWebSocketProtocol(t *testing.T) {
 		t.Fatalf("%+v %v", resp, err)
 	}
 }
+
+// A response whose headers and body arrive in separate TCP segments (a
+// streaming or slow server) must be read whole, as must a chunked body.
+func TestSplitAndChunkedBodies(t *testing.T) {
+	cases := map[string][]string{
+		"split content-length": {"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 13\r\n\r\n", `{"tokenURL":1}`[:13]},
+		"chunked":              {"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", "5\r\nhello\r\n", "6\r\n world\r\n", "0\r\n\r\n"},
+		"close-delimited":      {"HTTP/1.0 200 OK\r\n\r\n", "until ", "close"},
+	}
+	want := map[string]string{"split content-length": `{"tokenURL":1`, "chunked": "hello world", "close-delimited": "until close"}
+	for name, parts := range cases {
+		t.Run(name, func(t *testing.T) {
+			target := testsrv.Raw(t, func(c net.Conn) {
+				_ = c.SetReadDeadline(time.Now().Add(time.Second))
+				br := bufio.NewReader(c)
+				for {
+					if line, err := br.ReadString('\n'); err != nil || line == "\r\n" {
+						break
+					}
+				}
+				for _, p := range parts {
+					_, _ = c.Write([]byte(p))
+					time.Sleep(30 * time.Millisecond) // separate segments
+				}
+			})
+			s, _ := wire.Dial(context.Background(), core.ProtocolOpenADR, target, core.Options{})
+			defer s.Close()
+			resp, err := httpx.Request(s, "get", "GET", "h", "/", nil, 4096)
+			if err != nil || string(resp.Body) != want[name] {
+				t.Fatalf("body %q, want %q (err %v)", resp.Body, want[name], err)
+			}
+		})
+	}
+}
