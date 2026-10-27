@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"net"
 	"testing"
 	"time"
 
@@ -97,5 +98,46 @@ func TestDialFails(t *testing.T) {
 	var ce *core.ConnectionError
 	if !errors.As(err, &ce) {
 		t.Fatalf("want ConnectionError, got %v", err)
+	}
+}
+
+func TestWrapAndAccessors(t *testing.T) {
+	// Wrap an in-memory pipe as a session.
+	c1, c2 := net.Pipe()
+	defer c1.Close()
+	defer c2.Close()
+	target := core.Target{Host: "127.0.0.1", Port: 1}
+	s := wire.Wrap(context.Background(), core.ProtocolModbus, target, c1, core.Options{Trace: true})
+	if s.Conn() != c1 || s.Timeout() <= 0 {
+		t.Fatal("accessors")
+	}
+	go func() { b := make([]byte, 8); _, _ = c2.Read(b); _, _ = c2.Write([]byte{0, 1, 'Z'}) }()
+	resp, err := s.RoundTrip("x", []byte("hi"), lenFramer, 16)
+	if err != nil || len(resp) != 3 {
+		t.Fatalf("%q %v", resp, err)
+	}
+	s.Record("manual", []byte("p"), []byte("r"))
+	if len(s.Exchanges()) != 2 {
+		t.Fatalf("%d exchanges", len(s.Exchanges()))
+	}
+}
+
+func TestUDPRetries(t *testing.T) {
+	// The server answers only the second datagram.
+	var n int
+	target := testsrv.UDP(t, func([]byte) ([]byte, bool) {
+		n++
+		if n < 2 {
+			return nil, false
+		}
+		return []byte{0, 1, 'Z'}, false
+	})
+	target.Timeout = 600 * time.Millisecond
+	s := dial(t, target, core.Options{})
+	defer s.Close()
+	s.Retries = 2
+	resp, err := s.RoundTrip("x", []byte("ping"), nil, 16)
+	if err != nil || len(resp) != 3 {
+		t.Fatalf("%q %v", resp, err)
 	}
 }
