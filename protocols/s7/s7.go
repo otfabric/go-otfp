@@ -225,13 +225,13 @@ func parseSetupAck(p []byte) (setupAck, error) {
 	plen := int(binary.BigEndian.Uint16(p[6:]))
 	dlen := int(binary.BigEndian.Uint16(p[8:]))
 	if 12+plen+dlen != len(p) {
-		return setupAck{}, fmt.Errorf("S7 lengths %d+%d do not match %d octets", plen, dlen, len(p))
+		return setupAck{}, fmt.Errorf("s7 lengths %d+%d do not match %d octets", plen, dlen, len(p))
 	}
 	if p[10] != 0 || p[11] != 0 {
-		return setupAck{}, fmt.Errorf("Setup Communication refused, error 0x%02x%02x", p[10], p[11])
+		return setupAck{}, fmt.Errorf("setup communication refused, error 0x%02x%02x", p[10], p[11])
 	}
 	if plen != 8 || p[12] != fnSetupComm {
-		return setupAck{}, fmt.Errorf("not a Setup Communication acknowledgement")
+		return setupAck{}, fmt.Errorf("not a setup communication acknowledgement")
 	}
 	q := p[12:]
 	return setupAck{

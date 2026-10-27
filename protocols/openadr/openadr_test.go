@@ -52,7 +52,7 @@ func TestPrograms401(t *testing.T) {
 			_, _ = w.Write([]byte(`{"title":"Unauthorized","status":401,"detail":"a bearer token is required"}`))
 			return
 		}
-		http.Error(w, "nope", 501)
+		http.Error(w, "nope", http.StatusNotImplemented)
 	}))
 	r, err := New().Detect(context.Background(), tg, core.Options{})
 	if err != nil || !r.Matched || r.Confidence != core.ConfidenceHigh || r.Fingerprint.Signature != "programs=401" {
@@ -67,7 +67,7 @@ func TestProgramsAnonymous(t *testing.T) {
 			_, _ = w.Write([]byte(`[]`))
 			return
 		}
-		http.Error(w, "nope", 501)
+		http.Error(w, "nope", http.StatusNotImplemented)
 	}))
 	r, err := New().Detect(context.Background(), tg, core.Options{})
 	if err != nil || !r.Matched || r.Fingerprint.Signature != "programs=200" {
@@ -82,7 +82,7 @@ func TestOpenADR2b(t *testing.T) {
 			_, _ = w.Write([]byte(`<?xml version="1.0"?><oadrPayload xmlns="http://openadr.org/oadr-2.0b/2012/07"><oadrCreatedPartyRegistration/></oadrPayload>`))
 			return
 		}
-		http.Error(w, "nope", 501)
+		http.Error(w, "nope", http.StatusNotImplemented)
 	}))
 	r, err := New().Detect(context.Background(), tg, core.Options{MaxIntrusiveness: core.ReadOnly})
 	if err != nil || !r.Matched || r.Variant != "OpenADR 2.0b" || r.Confidence != core.ConfidenceCertain {
@@ -92,7 +92,7 @@ func TestOpenADR2b(t *testing.T) {
 
 func TestNotOpenADR(t *testing.T) {
 	tg := target(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, "generic 401", 401) // no Bearer, no OpenADR shape
+		http.Error(w, "generic 401", http.StatusUnauthorized) // no Bearer, no OpenADR shape
 	}))
 	r, err := New().Detect(context.Background(), tg, core.Options{MaxIntrusiveness: core.ReadOnly})
 	if err != nil || r.Matched {

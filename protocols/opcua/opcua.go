@@ -346,7 +346,7 @@ func openChannelResult(resp []byte) (channelID, tokenID uint32, ok bool) {
 	// ResponseHeader: timestamp(8) requestHandle(4) serviceResult(4)
 	// serviceDiagnostics(1 mask) stringTable(array len 4) additionalHeader(3).
 	p := skipResponseHeader(rest)
-	if p == nil || len(p) < 4 {
+	if len(p) < 4 {
 		return 0, 0, false
 	}
 	p = p[4:] // ServerProtocolVersion

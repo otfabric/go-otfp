@@ -107,7 +107,7 @@ func Parse(b []byte) (APDU, error) {
 	switch {
 	case c[0]&0x01 == 0:
 		if c[2]&0x01 != 0 {
-			return APDU{}, fmt.Errorf("I-format with odd receive sequence octet")
+			return APDU{}, fmt.Errorf("i-format with odd receive sequence octet")
 		}
 		return APDU{Format: 'I', SendSeq: (uint16(c[0])>>1 | uint16(c[1])<<7), ASDU: b[6:]}, nil
 	case c[0] == 0x01:
@@ -123,7 +123,7 @@ func Parse(b []byte) (APDU, error) {
 	case uTestAct, uTestCon, uStartAct, uStartCon, uStopAct, uStopCon:
 		return APDU{Format: 'U', U: c[0]}, nil
 	}
-	return APDU{}, fmt.Errorf("U-format function 0x%02x is not defined", c[0])
+	return APDU{}, fmt.Errorf("u-format function 0x%02x is not defined", c[0])
 }
 
 // Detect probes target.
