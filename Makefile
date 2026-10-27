@@ -3,7 +3,7 @@
 # thanks to https://marmelab.com/blog/2016/02/29/auto-documented-makefile.html
 
 .DEFAULT_GOAL := help
-.PHONY: help all build examples stress install fmt fmt-check lint lint-ci vet vuln test test-race coverage cover bench fuzz generate generate-check check clean interop test-interop
+.PHONY: help all build examples stress release-notes install fmt fmt-check lint lint-ci vet vuln test test-race coverage cover bench fuzz generate generate-check check clean interop test-interop
 
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -85,10 +85,15 @@ test-race: ## Run the tests with the race detector
 	@echo "Running race tests"
 	@go test -count=1 -race $(TEST_PKGS)
 
-coverage: ## Run tests with coverage across the library packages (writes coverage.out)
-	@echo "Running coverage"
+# Minimum library coverage; make coverage (and so make check) fails below it.
+COVER_MIN ?= 90
+
+coverage: ## Run tests with coverage across the library packages (writes coverage.out; fails below COVER_MIN%)
+	@echo "Running coverage (minimum $(COVER_MIN)%)"
 	@go test -count=1 -race -covermode=atomic -coverpkg=$(COVER_PKGS) -coverprofile=coverage.out $(TEST_PKGS)
-	@go tool cover -func=coverage.out | tail -1
+	@total=$$(go tool cover -func=coverage.out | awk '/^total:/ {sub("%","",$$3); print $$3}'); \
+	echo "total: $$total%"; \
+	awk -v t="$$total" -v m="$(COVER_MIN)" 'BEGIN { if (t+0 < m+0) { print "coverage " t "% is below " m "%"; exit 1 } }'
 
 cover: coverage ## Open the coverage report in a browser
 	@go tool cover -html=coverage.out
@@ -131,6 +136,12 @@ test-interop: ## Run the interop suite against the pinned reference servers (nee
 	@go test -tags=$(INTEROP_TAGS) -count=1 -timeout=20m ./interop/...
 
 interop: test-interop ## Alias for test-interop
+
+release-notes: ## Print the RELEASE.md section the release workflow will use for VERSION (e.g. VERSION=v0.1.0)
+	@test -n "$(VERSION)" || { echo "usage: make release-notes VERSION=vX.Y.Z"; exit 1; }
+	@out=$$(awk -v target="## $(VERSION)" '$$0 == target { found=1; next } found && /^---$$/ { exit } found { print }' RELEASE.md); \
+	test -n "$$out" || { echo "RELEASE.md has no '## $(VERSION)' section: the release would fall back to a commit log"; exit 1; }; \
+	echo "$$out"
 
 clean: ## Remove generated binaries and coverage artifacts
 	@rm -rf $(BIN_DIR) coverage.out coverage.html

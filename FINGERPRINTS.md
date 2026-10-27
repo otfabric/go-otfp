@@ -169,14 +169,20 @@ over a TLS target for a `wss://` CSMS.
 ### IEEE 2030.5 (`ieee2030.5`, TCP/TLS, passive)
 
 IEEE 2030.5 mandates mutual TLS with ECDSA certificates and the cipher suite
-`TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8`. Without a device certificate the data
-model cannot be read, so detection examines the TLS layer: a server that
-requests a client certificate and presents an ECDSA certificate is the shape
-of a 2030.5 server (**high**); a server that offers only CCM_8 (which the Go
-standard library lacks) aborts the handshake in a recognisable way (**high**).
-When the handshake can be completed (an anonymous or misconfigured server),
-GET /dcap and the `urn:ieee:std:2030.5:ns` DeviceCapability document are
-**certain**.
+`TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8`, which the Go standard library does not
+implement, and without a device certificate the data model cannot be read.
+So detection reads the TLS layer itself: it sends its own TLS 1.2
+ClientHello offering CCM_8 and common ECDHE suites, and parses the server's
+plaintext flight — the cipher suite it chose, its certificate's key type,
+and whether it requests a client certificate — without completing a
+handshake. A server that **chooses CCM_8** is **high** (GridAPPS-D, which
+offers nothing else, is recognised although no Go TLS client could talk to
+it); a server that **requests a client certificate and presents an ECDSA
+certificate** is **high**; a certificate request alone is **medium**. When
+the server chose a suite Go implements, a handshake is completed without a
+client certificate and GET /dcap is read: the `urn:ieee:std:2030.5:ns`
+DeviceCapability document is **certain**, a 403 to a mutual-TLS server
+**high**.
 
 ### OpenADR (`openadr`, TCP, passive)
 
