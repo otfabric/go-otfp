@@ -4,334 +4,404 @@ package core
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"sync"
 	"time"
 )
 
-// Observer receives scan progress / audit callbacks during protocol detection
-// (OnStart / OnResult). It is not a request-latency metrics hook.
-// Implementations must be safe for concurrent use when Parallel is true.
-// All methods must be non-blocking.
+// Observer receives scan progress callbacks, e.g. for audit logs or
+// progress bars. Implementations must be safe for concurrent use when
+// EngineConfig.Parallel is set, and must not block.
 type Observer interface {
-	// OnStart is called before each protocol detection attempt begins.
-	OnStart(protocol Protocol, target Target)
-	// OnResult is called after each detection attempt completes.
-	OnResult(result Result)
+	// OnStart is called before a fingerprinter runs.
+	OnStart(p Protocol, target Target)
+	// OnResult is called after it ran.
+	OnResult(r Result)
 }
 
-// EngineConfig configures the detection engine behavior.
+// EngineConfig configures an Engine. The zero value runs every applicable
+// fingerprinter sequentially in detect mode, without early stop.
 type EngineConfig struct {
-	// Parallel enables parallel protocol detection.
-	// When false, protocols are tested sequentially.
-	Parallel bool
+	// Mode is passed to each fingerprinter: ModeDetect or ModeIdentify.
+	Mode Mode
 
-	// EarlyStop causes the engine to stop after the first high-confidence match
-	// (Confidence >= HighConfidenceThreshold).
+	// Trace records raw exchanges in each Result.
+	Trace bool
+
+	// Protocols, when non-empty, restricts the scan to these protocols.
+	Protocols []Protocol
+
+	// Exclude removes protocols from the scan.
+	Exclude []Protocol
+
+	// MaxIntrusiveness skips fingerprinters that send more than this.
+	// The zero value, Passive, skips the ReadOnly ones (SunSpec); set
+	// ReadOnly to run all.
+	MaxIntrusiveness Intrusiveness
+
+	// LikelyOnly runs only the fingerprinters whose well-known ports
+	// include the target port, falling back to all when none does.
+	LikelyOnly bool
+
+	// EarlyStop stops after the first result with Confidence at least
+	// HighConfidenceThreshold. Fingerprinters that refine the matched
+	// protocol (SunSpec refines Modbus) still run.
 	EarlyStop bool
 
-	// HighConfidenceThreshold is the minimum confidence to trigger early stop.
-	// Default: 0.9
+	// HighConfidenceThreshold is the early-stop threshold. Zero means
+	// ConfidenceHigh.
 	HighConfidenceThreshold Confidence
 
-	// MaxConcurrency limits the number of in-flight goroutines when Parallel
-	// is true. Zero or negative means unbounded.
+	// StopOnRefused stops a scan when a TCP connection is refused:
+	// nothing listens on the port, so no other TCP fingerprinter can
+	// succeed either. It has no effect on UDP targets.
+	StopOnRefused bool
+
+	// Parallel runs fingerprinters concurrently. Many field devices accept
+	// a single TCP connection only; leave it off for OT networks.
+	Parallel bool
+
+	// MaxConcurrency bounds Parallel. Zero or negative is unbounded.
 	MaxConcurrency int
 
-	// MinInterval enforces a minimum delay between sequential protocol
-	// attempts (or between goroutine launches in parallel mode).
-	// In ICS environments, burst scanning may trigger IDS alerts.
-	// Zero means no delay.
+	// MinInterval is the minimum delay between starting two
+	// fingerprinters, to stay below IDS rate thresholds.
 	MinInterval time.Duration
 
-	// Observer receives scan progress / audit callbacks during detection.
-	// Nil disables observation. Not a request-metrics hook.
+	// Observer receives progress callbacks. Nil disables them.
 	Observer Observer
+
+	// Logger receives debug output. Nil is silent.
+	Logger Logger
 }
 
-// DefaultEngineConfig returns sensible default engine configuration.
-// Parallel is disabled by default because protocol detection always targets
-// a single endpoint, and many industrial devices cannot handle concurrent
-// TCP connections reliably — leading to non-deterministic results.
+// DefaultEngineConfig returns the configuration the otfp package and the
+// otprobe CLI use: sequential, early stop at ConfidenceHigh, stop when the
+// port refuses connections, read-only probes allowed, detect mode.
 func DefaultEngineConfig() EngineConfig {
 	return EngineConfig{
-		Parallel:                false,
 		EarlyStop:               true,
-		HighConfidenceThreshold: 0.9,
-		MaxConcurrency:          0,
+		HighConfidenceThreshold: ConfidenceHigh,
+		StopOnRefused:           true,
+		MaxIntrusiveness:        ReadOnly,
 	}
 }
 
-// SafeEngineConfig returns a conservative configuration suitable for
-// production OT environments where minimising network impact is critical.
+// SafeEngineConfig returns a conservative configuration for production OT
+// networks: DefaultEngineConfig limited to passive probes, the likely
+// protocols of the port first and only, and 250 ms between probes.
 func SafeEngineConfig() EngineConfig {
-	return EngineConfig{
-		Parallel:                false,
-		EarlyStop:               true,
-		HighConfidenceThreshold: 0.9,
-		MaxConcurrency:          1,
-	}
+	c := DefaultEngineConfig()
+	c.MaxIntrusiveness = Passive
+	c.LikelyOnly = true
+	c.MinInterval = 250 * time.Millisecond
+	return c
 }
 
-// Engine orchestrates protocol detection using registered fingerprinters.
+// Engine runs the fingerprinters of a registry against targets. It is safe
+// for concurrent use.
 type Engine struct {
 	registry *Registry
 	config   EngineConfig
 }
 
-// NewEngine creates a new detection engine with the given registry and config.
+// NewEngine returns an engine over registry.
 func NewEngine(registry *Registry, config EngineConfig) *Engine {
 	if config.HighConfidenceThreshold <= 0 {
-		config.HighConfidenceThreshold = 0.9
+		config.HighConfidenceThreshold = ConfidenceHigh
 	}
-	return &Engine{
-		registry: registry,
-		config:   config,
-	}
+	return &Engine{registry: registry, config: config}
 }
 
-// ScanReport is a structured summary of a complete detection run.
-type ScanReport struct {
-	// Target is the endpoint that was scanned.
-	Target Target
+// Config returns the engine's configuration.
+func (e *Engine) Config() EngineConfig { return e.config }
 
-	// StartedAt records when the scan began.
-	StartedAt time.Time
-
-	// FinishedAt records when the scan completed.
-	FinishedAt time.Time
-
-	// Duration is the wall-clock time of the scan.
-	Duration time.Duration
-
-	// Results holds all individual detection outcomes, sorted by
-	// confidence descending.
-	Results []Result
-
-	// BestMatch is the highest-confidence matched result, or a
-	// ProtocolUnknown result if nothing matched.
-	BestMatch Result
+// Report is the outcome of a scan of one target.
+type Report struct {
+	Target     Target        `json:"target"`
+	StartedAt  time.Time     `json:"startedAt"`
+	FinishedAt time.Time     `json:"finishedAt"`
+	Duration   time.Duration `json:"duration"`
+	// Results holds every result, matched ones first, by confidence.
+	Results []Result `json:"results"`
+	// Best is the most specific, most confident match, or a
+	// ProtocolUnknown result when nothing matched.
+	Best Result `json:"best"`
 }
 
-// Scan runs a full detection sweep and returns a structured ScanReport.
-func (e *Engine) Scan(ctx context.Context, target Target) ScanReport {
-	start := time.Now()
-	results := e.DetectAll(ctx, target)
-	end := time.Now()
-
-	best := Result{
-		Protocol:    ProtocolUnknown,
-		Matched:     false,
-		Confidence:  0.0,
-		Details:     "No OT protocol detected",
-		DetectionID: generateDetectionID(),
-		Timestamp:   time.Now(),
-	}
-	for _, r := range results {
-		if r.Matched && r.Confidence > best.Confidence {
-			best = r
+// Matches returns the matched results, best first.
+func (r Report) Matches() []Result {
+	var out []Result
+	for _, x := range r.Results {
+		if x.Matched {
+			out = append(out, x)
 		}
 	}
-
-	return ScanReport{
-		Target:     target,
-		StartedAt:  start,
-		FinishedAt: end,
-		Duration:   end.Sub(start),
-		Results:    results,
-		BestMatch:  best,
-	}
+	return out
 }
 
-// DetectAll runs all registered fingerprinters against the target and returns
-// all results sorted by confidence (highest first).
-func (e *Engine) DetectAll(ctx context.Context, target Target) []Result {
-	fps := e.registry.All()
-	if len(fps) == 0 {
-		return nil
+// Scan validates target and runs the applicable fingerprinters against it.
+// It returns an error only when the target is invalid or no fingerprinter
+// applies; per-protocol failures are in the results.
+func (e *Engine) Scan(ctx context.Context, target Target) (Report, error) {
+	if err := target.Validate(); err != nil {
+		return Report{}, err
 	}
-
+	plan := e.plan(target)
+	if len(plan) == 0 {
+		return Report{}, ErrNoFingerprinters
+	}
+	rep := Report{Target: target, StartedAt: time.Now()}
 	if e.config.Parallel {
-		return e.detectParallel(ctx, target, fps)
+		rep.Results = e.runParallel(ctx, target, plan)
+	} else {
+		rep.Results = e.runSequential(ctx, target, plan)
 	}
-	return e.detectSequential(ctx, target, fps)
+	rep.FinishedAt = time.Now()
+	rep.Duration = rep.FinishedAt.Sub(rep.StartedAt)
+	sortResults(rep.Results)
+	rep.Best = best(rep.Results, e.registry)
+	return rep, nil
 }
 
-// Detect runs all fingerprinters and returns the best match.
-// If no protocol is detected, it returns a Result with Protocol=ProtocolUnknown.
-func (e *Engine) Detect(ctx context.Context, target Target) Result {
-	results := e.DetectAll(ctx, target)
-
-	// Filter matched results.
-	var matched []Result
-	for _, r := range results {
-		if r.Matched {
-			matched = append(matched, r)
-		}
+// Detect runs one protocol's fingerprinter against target, over
+// target.Network.
+func (e *Engine) Detect(ctx context.Context, target Target, p Protocol) (Result, error) {
+	if err := target.Validate(); err != nil {
+		return Result{}, err
 	}
-
-	if len(matched) == 0 {
-		return Result{
-			Protocol:    ProtocolUnknown,
-			Matched:     false,
-			Confidence:  0.0,
-			Details:     "No OT protocol detected",
-			DetectionID: generateDetectionID(),
-			Timestamp:   time.Now(),
-		}
-	}
-
-	// Return highest confidence.
-	return matched[0]
-}
-
-// DetectProtocol runs a specific named fingerprinter against the target.
-func (e *Engine) DetectProtocol(ctx context.Context, target Target, protocol Protocol) (Result, error) {
-	fp := e.registry.Get(protocol)
+	fp := e.registry.Get(p, target.Network)
 	if fp == nil {
-		return Result{}, &ProtocolNotFoundError{Protocol: protocol}
+		return Result{}, &ProtocolNotFoundError{Protocol: p}
 	}
-	return fp.Detect(ctx, target)
+	return e.run(ctx, fp, target), nil
 }
 
-// ProtocolNotFoundError is returned when a requested protocol is not registered.
-type ProtocolNotFoundError struct {
-	Protocol Protocol
+func (e *Engine) options() Options {
+	return Options{Mode: e.config.Mode, Trace: e.config.Trace, Logger: e.config.Logger,
+		MaxIntrusiveness: e.config.MaxIntrusiveness}
 }
 
-func (e *ProtocolNotFoundError) Error() string {
-	return "protocol not registered: " + e.Protocol.String()
+func (e *Engine) plan(target Target) []Fingerprinter {
+	include := map[Protocol]bool{}
+	for _, p := range e.config.Protocols {
+		include[p] = true
+	}
+	exclude := map[Protocol]bool{}
+	for _, p := range e.config.Exclude {
+		exclude[p] = true
+	}
+	var out, likely []Fingerprinter
+	for _, fp := range e.registry.Plan(target) {
+		info := fp.Info()
+		if (len(include) > 0 && !include[info.Protocol]) || exclude[info.Protocol] ||
+			info.Intrusiveness > e.config.MaxIntrusiveness {
+			continue
+		}
+		out = append(out, fp)
+		if hasPort(info.Ports, target.Port) {
+			likely = append(likely, fp)
+		}
+	}
+	if e.config.LikelyOnly && len(likely) > 0 {
+		return likely
+	}
+	return out
 }
 
-func (e *Engine) detectSequential(ctx context.Context, target Target, fps []Fingerprinter) []Result {
+// run executes one fingerprinter and normalises its result.
+func (e *Engine) run(ctx context.Context, fp Fingerprinter, target Target) Result {
+	info := fp.Info()
+	if e.config.Observer != nil {
+		e.config.Observer.OnStart(info.Protocol, target)
+	}
+	start := time.Now()
+	r, err := e.safeDetect(ctx, fp, target)
+	if err != nil {
+		x := ErrorResult(info.Protocol, err)
+		x.Exchanges = r.Exchanges
+		r = x
+	}
+	if r.Protocol == ProtocolUnknown {
+		r.Protocol = info.Protocol
+	}
+	if r.DetectionID == "" {
+		r.DetectionID = newDetectionID()
+	}
+	if r.Timestamp.IsZero() {
+		r.Timestamp = time.Now()
+	}
+	r.Duration = time.Since(start)
+	if e.config.Logger != nil {
+		e.config.Logger.Debugf("otfp: %s %s: %s", target, info.Protocol.Slug(), r)
+	}
+	if e.config.Observer != nil {
+		e.config.Observer.OnResult(r)
+	}
+	return r
+}
+
+// safeDetect turns a panicking fingerprinter into an error result so that
+// one broken third-party fingerprinter cannot take a scan down.
+func (e *Engine) safeDetect(ctx context.Context, fp Fingerprinter, target Target) (r Result, err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			r, err = Result{}, &DetectError{Protocol: fp.Info().Protocol, Op: "detect", Err: panicError{v}}
+		}
+	}()
+	return fp.Detect(ctx, target, e.options())
+}
+
+type panicError struct{ v any }
+
+func (p panicError) Error() string { return "fingerprinter panicked: " + toString(p.v) }
+
+func toString(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case error:
+		return x.Error()
+	}
+	return "non-error value"
+}
+
+// stopAfter reports whether r ends the scan, and if so which protocol may
+// still be refined.
+func (e *Engine) stopAfter(r Result, target Target) (stop bool, refine Protocol) {
+	if e.config.EarlyStop && r.Matched && r.Confidence >= e.config.HighConfidenceThreshold {
+		return true, r.Protocol
+	}
+	var ce *ConnectionError
+	if e.config.StopOnRefused && target.Network == TCP && errors.As(r.Error, &ce) && ce.Refused() {
+		return true, ProtocolUnknown
+	}
+	return false, ProtocolUnknown
+}
+
+func (e *Engine) wait(ctx context.Context, i int) bool {
+	if e.config.MinInterval <= 0 || i == 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(e.config.MinInterval)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+func (e *Engine) runSequential(ctx context.Context, target Target, plan []Fingerprinter) []Result {
 	var results []Result
-
-	for i, fp := range fps {
-		select {
-		case <-ctx.Done():
-			return results
-		default:
+	stopped, refine := false, ProtocolUnknown
+	n := 0
+	for _, fp := range plan {
+		info := fp.Info()
+		if stopped && (refine == ProtocolUnknown || info.Refines != refine) {
+			continue
 		}
-
-		// Enforce inter-probe delay.
-		if e.config.MinInterval > 0 && i > 0 {
-			select {
-			case <-ctx.Done():
-				return results
-			case <-time.After(e.config.MinInterval):
-			}
-		}
-
-		if e.config.Observer != nil {
-			e.config.Observer.OnStart(fp.Name(), target)
-		}
-
-		result, err := fp.Detect(ctx, target)
-		if err != nil {
-			result = ErrorResult(fp.Name(), err)
-		}
-
-		if e.config.Observer != nil {
-			e.config.Observer.OnResult(result)
-		}
-
-		results = append(results, result)
-
-		if e.config.EarlyStop && result.Matched && result.Confidence >= e.config.HighConfidenceThreshold {
+		if !e.wait(ctx, n) {
 			break
 		}
+		n++
+		r := e.run(ctx, fp, target)
+		results = append(results, r)
+		if !stopped {
+			stopped, refine = e.stopAfter(r, target)
+		}
 	}
-
-	sortResults(results)
 	return results
 }
 
-func (e *Engine) detectParallel(ctx context.Context, target Target, fps []Fingerprinter) []Result {
+func (e *Engine) runParallel(ctx context.Context, target Target, plan []Fingerprinter) []Result {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	type indexedResult struct {
-		result Result
-		index  int
-	}
-
-	ch := make(chan indexedResult, len(fps))
-	var wg sync.WaitGroup
-
-	// Semaphore for concurrency limiting. Nil channel = unbounded.
+	var (
+		mu      sync.Mutex
+		results []Result
+		wg      sync.WaitGroup
+	)
 	var sem chan struct{}
 	if e.config.MaxConcurrency > 0 {
 		sem = make(chan struct{}, e.config.MaxConcurrency)
 	}
-
-	for i, fp := range fps {
-		// Stagger goroutine launches when MinInterval is set.
-		if e.config.MinInterval > 0 && i > 0 {
+	for i, fp := range plan {
+		if !e.wait(ctx, i) {
+			break
+		}
+		if sem != nil {
 			select {
+			case sem <- struct{}{}:
 			case <-ctx.Done():
+			}
+			if ctx.Err() != nil {
 				break
-			case <-time.After(e.config.MinInterval):
 			}
 		}
-
 		wg.Add(1)
-		go func(idx int, fp Fingerprinter) {
+		go func(fp Fingerprinter) {
 			defer wg.Done()
-
-			// Acquire semaphore slot if bounded.
 			if sem != nil {
-				select {
-				case sem <- struct{}{}:
-					defer func() { <-sem }()
-				case <-ctx.Done():
-					ch <- indexedResult{result: ErrorResult(fp.Name(), ctx.Err()), index: idx}
-					return
-				}
+				defer func() { <-sem }()
 			}
-
-			if e.config.Observer != nil {
-				e.config.Observer.OnStart(fp.Name(), target)
-			}
-
-			result, err := fp.Detect(ctx, target)
-			if err != nil {
-				result = ErrorResult(fp.Name(), err)
-			}
-
-			if e.config.Observer != nil {
-				e.config.Observer.OnResult(result)
-			}
-
-			ch <- indexedResult{result: result, index: idx}
-
-			// Signal early stop if high confidence match.
-			if e.config.EarlyStop && result.Matched && result.Confidence >= e.config.HighConfidenceThreshold {
+			r := e.run(ctx, fp, target)
+			mu.Lock()
+			results = append(results, r)
+			mu.Unlock()
+			// Refinements are not waited for in parallel mode: they
+			// were started alongside.
+			if stop, _ := e.stopAfter(r, target); stop {
 				cancel()
 			}
-		}(i, fp)
+		}(fp)
 	}
-
-	// Close channel once all goroutines complete.
-	go func() {
-		wg.Wait()
-		close(ch)
-	}()
-
-	results := make([]Result, 0, len(fps))
-	for ir := range ch {
-		results = append(results, ir.result)
-	}
-
-	sortResults(results)
+	wg.Wait()
 	return results
 }
 
-func sortResults(results []Result) {
-	sort.Slice(results, func(i, j int) bool {
-		// Matched results first, then by confidence descending.
-		if results[i].Matched != results[j].Matched {
-			return results[i].Matched
+func sortResults(rs []Result) {
+	sort.SliceStable(rs, func(i, j int) bool {
+		if rs[i].Matched != rs[j].Matched {
+			return rs[i].Matched
 		}
-		return results[i].Confidence > results[j].Confidence
+		return rs[i].Confidence > rs[j].Confidence
 	})
+}
+
+// best picks the matched result with the highest confidence; among equal
+// confidences, a refining protocol (SunSpec) beats the one it refines
+// (Modbus).
+func best(rs []Result, reg *Registry) Result {
+	var b *Result
+	for i := range rs {
+		r := &rs[i]
+		if !r.Matched {
+			continue
+		}
+		switch {
+		case b == nil, r.Confidence > b.Confidence:
+			b = r
+		case r.Confidence == b.Confidence && refines(reg, r.Protocol, b.Protocol):
+			b = r
+		}
+	}
+	if b == nil {
+		x := NoMatch(ProtocolUnknown)
+		x.Details = "no OT protocol detected"
+		return x
+	}
+	return *b
+}
+
+func refines(reg *Registry, a, b Protocol) bool {
+	for _, fp := range reg.All() {
+		if i := fp.Info(); i.Protocol == a && i.Refines == b {
+			return true
+		}
+	}
+	return false
 }

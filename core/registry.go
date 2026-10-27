@@ -8,66 +8,111 @@ import (
 	"sync"
 )
 
-// Registry holds registered protocol fingerprinters.
-// It is safe for concurrent use.
+// Registry holds fingerprinters, at most one per protocol and network. It is
+// safe for concurrent use.
 type Registry struct {
-	mu           sync.RWMutex
-	fingerprints []Fingerprinter
-	byName       map[Protocol]Fingerprinter
+	mu  sync.RWMutex
+	fps []Fingerprinter
 }
 
-// NewRegistry creates an empty Registry.
-func NewRegistry() *Registry {
-	return &Registry{
-		byName: make(map[Protocol]Fingerprinter),
-	}
-}
+// NewRegistry returns an empty registry.
+func NewRegistry() *Registry { return &Registry{} }
 
-// Register adds a fingerprinter to the registry.
-// Returns an error if a fingerprinter with the same name is already registered.
+// Register adds fp. It fails when a fingerprinter for the same protocol and
+// network is already registered, or when Info reports an invalid protocol.
 func (r *Registry) Register(fp Fingerprinter) error {
+	info := fp.Info()
+	if !info.Protocol.IsValid() {
+		return fmt.Errorf("register: invalid protocol %d", info.Protocol)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-
-	name := fp.Name()
-	if _, exists := r.byName[name]; exists {
-		return fmt.Errorf("fingerprinter %q already registered", name.String())
+	for _, have := range r.fps {
+		hi := have.Info()
+		if hi.Protocol == info.Protocol && hi.Network == info.Network {
+			return fmt.Errorf("register: %s over %s already registered", info.Protocol, info.Network)
+		}
 	}
-
-	r.fingerprints = append(r.fingerprints, fp)
-	r.byName[name] = fp
+	r.fps = append(r.fps, fp)
 	return nil
 }
 
-// Get returns the fingerprinter for the given protocol, or nil if not found.
-func (r *Registry) Get(protocol Protocol) Fingerprinter {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.byName[protocol]
+// MustRegister is Register that panics on error, for package-level setup.
+func (r *Registry) MustRegister(fps ...Fingerprinter) *Registry {
+	for _, fp := range fps {
+		if err := r.Register(fp); err != nil {
+			panic(err)
+		}
+	}
+	return r
 }
 
-// All returns all registered fingerprinters sorted by priority (lowest first).
+// Get returns the fingerprinter for protocol p over network n, or nil.
+func (r *Registry) Get(p Protocol, n Network) Fingerprinter {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, fp := range r.fps {
+		if i := fp.Info(); i.Protocol == p && i.Network == n {
+			return fp
+		}
+	}
+	return nil
+}
+
+// All returns every fingerprinter, ordered by Priority then protocol.
 func (r *Registry) All() []Fingerprinter {
 	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	result := make([]Fingerprinter, len(r.fingerprints))
-	copy(result, r.fingerprints)
-
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Priority() < result[j].Priority()
+	out := append([]Fingerprinter(nil), r.fps...)
+	r.mu.RUnlock()
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i].Info(), out[j].Info()
+		if a.Priority != b.Priority {
+			return a.Priority < b.Priority
+		}
+		return a.Protocol < b.Protocol
 	})
-	return result
+	return out
 }
 
-// Names returns the protocol identifiers of all registered fingerprinters.
-func (r *Registry) Names() []Protocol {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-
-	names := make([]Protocol, len(r.fingerprints))
-	for i, fp := range r.fingerprints {
-		names[i] = fp.Name()
+// Protocols returns the distinct protocols registered, in numeric order.
+func (r *Registry) Protocols() []Protocol {
+	seen := map[Protocol]bool{}
+	for _, fp := range r.All() {
+		seen[fp.Info().Protocol] = true
 	}
-	return names
+	out := make([]Protocol, 0, len(seen))
+	for p := range seen {
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
+}
+
+// Plan returns the fingerprinters that apply to target, in the order the
+// engine runs them: those of target.Network only; first those whose
+// well-known ports include target.Port, then the rest, each group by
+// Priority.
+func (r *Registry) Plan(target Target) []Fingerprinter {
+	var likely, rest []Fingerprinter
+	for _, fp := range r.All() {
+		info := fp.Info()
+		if info.Network != target.Network {
+			continue
+		}
+		if hasPort(info.Ports, target.Port) {
+			likely = append(likely, fp)
+		} else {
+			rest = append(rest, fp)
+		}
+	}
+	return append(likely, rest...)
+}
+
+func hasPort(ports []int, p int) bool {
+	for _, x := range ports {
+		if x == p {
+			return true
+		}
+	}
+	return false
 }

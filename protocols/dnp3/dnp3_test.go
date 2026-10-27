@@ -3,329 +3,165 @@
 package dnp3
 
 import (
+	"bytes"
 	"context"
-	"net"
+	"encoding/hex"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/otfabric/go-otfp/core"
+	"github.com/otfabric/go-otfp/internal/testsrv"
 )
 
-// startMockServer starts a TCP server that accepts one connection,
-// reads data, and responds with the provided response bytes.
-func startMockServer(t *testing.T, response []byte) (string, func()) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to start mock server: %v", err)
+func TestCRCVector(t *testing.T) {
+	want, _ := hex.DecodeString("056405c001000004e921")
+	got := Frame(0xC0, 1, 0x400, nil)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("frame % x, want % x", got, want)
 	}
+	// The probe from master 1 to outstation 10 (dnp3ctl's discover).
+	if got := hex.EncodeToString(Frame(0xC9, 10, 1, nil)); got != "056405c90a000100feda" {
+		t.Fatalf("link status request %s", got)
+	}
+}
 
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
+func TestFrameRoundTrip(t *testing.T) {
+	data := bytes.Repeat([]byte{0xAA}, 40)
+	f := Frame(0x44, 1, 1024, data)
+	if len(f) != FrameLen(f[2]) {
+		t.Fatalf("len %d, FrameLen %d", len(f), FrameLen(f[2]))
+	}
+	h, err := ParseHeader(f)
+	if err != nil || !bytes.Equal(h.Data, data) || h.Src != 1024 || h.Dst != 1 {
+		t.Fatalf("%+v %v", h, err)
+	}
+	f[len(f)-1] ^= 1
+	if _, err := ParseHeader(f); err == nil {
+		t.Fatal("corrupt block CRC accepted")
+	}
+}
+
+// outstation answers like the interop fixture: address 1024, master 1 only,
+// self address not supported.
+func outstation(addr uint16, attrs bool) testsrv.Handler {
+	return func(req []byte) ([]byte, bool) {
+		var out []byte
+		for len(req) >= headerLen {
+			n := FrameLen(req[2])
+			if n < 0 || n > len(req) {
+				break
+			}
+			h, err := ParseHeader(req[:n])
+			req = req[n:]
+			if err != nil || h.Dst != addr || h.Src != 1 {
+				continue
+			}
+			switch h.Ctrl & 0x0F {
+			case fcRequestLinkStatus:
+				out = append(out, Frame(fcLinkStatus, h.Src, addr, nil)...)
+			case fcUnconfirmedData:
+				if !attrs {
+					continue
+				}
+				obj := []byte{0x00, 252, 0x00, 0, 0, 1, 4, 'A', 'c', 'm', 'e',
+					0x00, 250, 0x00, 0, 0, 1, 6, 'R', 'T', 'U', '-', '5', '0',
+					0x00, 242, 0x00, 0, 0, 1, 5, '2', '.', '1', '.', '0',
+					0x00, 248, 0x00, 0, 0, 1, 3, 'S', 'N', '1',
+					0x00, 241, 0x00, 0, 0, 2, 2, 0x00, 0x08}
+				apdu := append([]byte{0xC0, 0x81, 0x00, 0x00}, obj...)
+				// Two transport segments to exercise reassembly.
+				out = append(out, Frame(0x44, h.Src, addr, append([]byte{0x40}, apdu[:20]...))...)
+				out = append(out, Frame(0x44, h.Src, addr, append([]byte{0x81}, apdu[20:]...))...)
+			}
 		}
-		defer conn.Close() //nolint:errcheck
+		return out, false
+	}
+}
 
-		buf := make([]byte, 1024)
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		_, _ = conn.Read(buf)
+func TestDetectAndIdentify(t *testing.T) {
+	target := testsrv.TCP(t, outstation(1024, true))
+	r, err := New().Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify, Trace: true})
+	if err != nil || !r.Matched || r.Confidence != core.ConfidenceCertain {
+		t.Fatalf("%v %v", r, err)
+	}
+	if r.Fingerprint.Metadata["outstation"] != "1024" || r.Fingerprint.Metadata["master"] != "1" {
+		t.Fatalf("metadata %v", r.Fingerprint.Metadata)
+	}
+	id := r.Identity
+	if id.Vendor != "Acme" || id.Product != "RTU-50" || id.Version != "2.1.0" || id.Serial != "SN1" ||
+		id.Attributes["g0v241"] != "2048" || id.Attributes["outstationAddress"] != "1024" {
+		t.Fatalf("identity %+v", id)
+	}
+}
 
-		if response != nil {
-			_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-			_, _ = conn.Write(response)
+func TestSelfAddress(t *testing.T) {
+	target := testsrv.TCP(t, outstation(selfAddress, false))
+	r, err := NewWithConfig(Config{Outstations: []uint16{77}}).Detect(context.Background(), target, core.Options{})
+	if err != nil || !r.Matched {
+		t.Fatalf("%v %v", r, err)
+	}
+}
+
+func TestSilentOutstation(t *testing.T) {
+	target := testsrv.TCP(t, outstation(4242, false)) // not a candidate
+	target.Timeout = 200 * time.Millisecond
+	r, err := New().Detect(context.Background(), target, core.Options{})
+	var te *core.TimeoutError
+	if r.Matched || !errors.As(err, &te) {
+		t.Fatalf("%v %v", r, err)
+	}
+}
+
+func TestNotDNP3(t *testing.T) {
+	for name, resp := range map[string][]byte{
+		"modbus":  {0, 1, 0, 0, 0, 3, 1, 0x83, 1},
+		"bad crc": {0x05, 0x64, 0x05, 0x0B, 0x01, 0x00, 0x0A, 0x00, 0x00, 0x00},
+	} {
+		t.Run(name, func(t *testing.T) {
+			target := testsrv.TCP(t, testsrv.Script(resp))
+			target.Timeout = 300 * time.Millisecond
+			r, _ := New().Detect(context.Background(), target, core.Options{})
+			if r.Matched {
+				t.Fatalf("%v", r)
+			}
+		})
+	}
+}
+
+// A frame with valid CRCs that is not a link status is still DNP3, but
+// less certain.
+func TestOtherFrames(t *testing.T) {
+	for name, resp := range map[string][]byte{
+		"primary":   Frame(0xC4, 1, 10, []byte{0xC0}),
+		"other fun": Frame(0x00, 1, 10, nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			target := testsrv.TCP(t, testsrv.Script(resp))
+			target.Timeout = 300 * time.Millisecond
+			r, _ := New().Detect(context.Background(), target, core.Options{})
+			if !r.Matched || r.Confidence != core.ConfidenceMedium {
+				t.Fatalf("%v", r)
+			}
+		})
+	}
+}
+
+func TestParseAttributesErrors(t *testing.T) {
+	for _, b := range [][]byte{nil, {0xC0, 0x01, 0, 0}, {0xC0, 0x81, 0, 0}, {0xC0, 0x81, 0, 0, 0, 252, 0, 2, 1}} {
+		if _, err := ParseAttributes(b); err == nil {
+			t.Fatalf("% x accepted", b)
 		}
-	}()
-
-	return ln.Addr().String(), func() { _ = ln.Close() }
-}
-
-func parseAddr(addr string) (string, int) {
-	host, portStr, _ := net.SplitHostPort(addr)
-	port := 0
-	for _, c := range portStr {
-		port = port*10 + int(c-'0')
 	}
-	return host, port
 }
 
-// buildDNP3Response builds a minimal DNP3 link-layer response frame with valid CRC.
-func buildDNP3Response(control byte, dest, source uint16) []byte {
-	frame := make([]byte, 10)
-	frame[0] = 0x05
-	frame[1] = 0x64
-	frame[2] = 0x05 // length
-	frame[3] = control
-	frame[4] = byte(dest & 0xFF)
-	frame[5] = byte(dest >> 8)
-	frame[6] = byte(source & 0xFF)
-	frame[7] = byte(source >> 8)
-	crc := crc16DNP(frame[0:8])
-	frame[8] = byte(crc & 0xFF)
-	frame[9] = byte((crc >> 8) & 0xFF)
-	return frame
-}
-
-func TestDNP3DetectValidLinkStatus(t *testing.T) {
-	// Build a valid Link Status response: DIR=0, FC=0x0B.
-	resp := buildDNP3Response(0x0B, 0x0000, 0x0001)
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
+func FuzzParse(f *testing.F) {
+	f.Add(Frame(0x0B, 1, 10, nil))
+	f.Add(Frame(0x44, 1, 10, []byte{0xC0, 0xC0, 0x81, 0, 0, 0, 252, 0, 0, 0, 1, 1, 'A'}))
+	f.Fuzz(func(t *testing.T, b []byte) {
+		if h, err := ParseHeader(b); err == nil && len(h.Data) > 0 {
+			_, _ = ParseAttributes(h.Data[1:])
+		}
+		_ = Framer(b)
 	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if !result.Matched {
-		t.Error("Expected match for valid DNP3 Link Status response")
-	}
-	if result.Confidence < 0.9 {
-		t.Errorf("Confidence too low: %f", result.Confidence)
-	}
-	t.Logf("Result: %s", result)
-}
-
-func TestDNP3DetectACKResponse(t *testing.T) {
-	// ACK response: DIR=0, FC=0x00.
-	resp := buildDNP3Response(0x00, 0x0000, 0x0001)
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if !result.Matched {
-		t.Error("Expected match for valid DNP3 ACK response")
-	}
-	if result.Confidence < 0.9 {
-		t.Errorf("Confidence too low: %f", result.Confidence)
-	}
-	t.Logf("Result: %s", result)
-}
-
-func TestDNP3DetectWrongStartBytes(t *testing.T) {
-	resp := buildDNP3Response(0x0B, 0x0000, 0x0001)
-	resp[0] = 0xFF // Corrupt start byte.
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Should not match with wrong start bytes")
-	}
-}
-
-func TestDNP3DetectCorruptCRC(t *testing.T) {
-	resp := buildDNP3Response(0x0B, 0x0000, 0x0001)
-	resp[8] = 0xFF // Corrupt CRC.
-	resp[9] = 0xFF
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	// CRC is mandatory for valid DNP3 - corrupt CRC should not match.
-	if result.Matched {
-		t.Errorf("Should not match with corrupt CRC (confidence=%f)", result.Confidence)
-	}
-	t.Logf("Result: %s", result)
-}
-
-func TestDNP3DetectTruncatedResponse(t *testing.T) {
-	resp := []byte{0x05, 0x64, 0x05}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Should not match truncated response")
-	}
-}
-
-func TestDNP3DetectNoResponse(t *testing.T) {
-	addr, cleanup := startMockServer(t, nil)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	_, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 1 * time.Second,
-	})
-	_ = err // Should not panic.
-}
-
-func TestDNP3DetectConnectionRefused(t *testing.T) {
-	fp := New()
-	_, err := fp.Detect(context.Background(), core.Target{
-		IP:      "127.0.0.1",
-		Port:    1,
-		Timeout: 1 * time.Second,
-	})
-	if err == nil {
-		t.Error("Expected error for connection refused")
-	}
-}
-
-func TestDNP3DetectRandomBinary(t *testing.T) {
-	resp := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Random binary should not match DNP3")
-	}
-}
-
-func TestDNP3DetectInvalidLength(t *testing.T) {
-	resp := buildDNP3Response(0x0B, 0x0000, 0x0001)
-	resp[2] = 0x00 // Zero length - invalid.
-	// Recompute CRC.
-	crc := crc16DNP(resp[0:8])
-	resp[8] = byte(crc & 0xFF)
-	resp[9] = byte((crc >> 8) & 0xFF)
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	// Start bytes match but length is invalid - reduced confidence.
-	if result.Matched && result.Confidence >= 0.9 {
-		t.Errorf("Should not have high confidence with invalid length: %f", result.Confidence)
-	}
-	t.Logf("Result: %s", result)
-}
-
-func TestDNP3Name(t *testing.T) {
-	fp := New()
-	if fp.Name() != core.ProtocolDNP3 {
-		t.Errorf("Name() = %s, want %s", fp.Name(), core.ProtocolDNP3)
-	}
-}
-
-func TestBuildProbe(t *testing.T) {
-	probe := buildProbe()
-	if len(probe) != 10 {
-		t.Fatalf("probe length = %d, want 10", len(probe))
-	}
-	if probe[0] != 0x05 || probe[1] != 0x64 {
-		t.Errorf("start bytes = %02X %02X, want 05 64", probe[0], probe[1])
-	}
-	if probe[2] != 0x05 {
-		t.Errorf("length = 0x%02X, want 0x05", probe[2])
-	}
-	// Verify CRC.
-	crc := crc16DNP(probe[0:8])
-	gotCRC := uint16(probe[8]) | uint16(probe[9])<<8
-	if gotCRC != crc {
-		t.Errorf("CRC mismatch: got 0x%04X, computed 0x%04X", gotCRC, crc)
-	}
-}
-
-func TestCRC16DNP(t *testing.T) {
-	// Known test vector: DNP3 spec uses specific CRC values.
-	// Test with a simple known input.
-	data := []byte{0x05, 0x64, 0x05, 0xC0, 0x01, 0x00, 0x00, 0x00}
-	crc := crc16DNP(data)
-	// CRC should be non-zero for valid data.
-	if crc == 0 {
-		t.Error("CRC should not be zero for valid data")
-	}
-	// Verify deterministic.
-	crc2 := crc16DNP(data)
-	if crc != crc2 {
-		t.Errorf("CRC not deterministic: %04X != %04X", crc, crc2)
-	}
-}
-
-func TestDNP3DetectModbusEcho(t *testing.T) {
-	// Simulate a Modbus device echoing the DNP3 probe with error flag at byte 7.
-	probe := buildProbe()
-	resp := make([]byte, len(probe))
-	copy(resp, probe)
-	resp[7] = probe[7] | 0x80 // Modbus error flag
-	resp[8] = 0x04            // Exception code
-
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Errorf("Modbus echo should not match as DNP3 (confidence=%f)", result.Confidence)
-	}
 }
