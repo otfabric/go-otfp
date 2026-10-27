@@ -3,6 +3,58 @@
 > **Stability:** `v0.0.x` is pre-1.0. Public APIs may change between tags; pin
 > versions and read these notes before upgrading.
 
+## v0.1.0 (pending release)
+
+**Previous release:** v0.0.3
+
+### Summary
+
+Complete rewrite of the library around a new engine and a transport-aware,
+graded-confidence fingerprinting model, expanding coverage from 10 to 14 OT
+protocols and adding read-only device identification. Still `v0.x` (pre-1.0);
+the public API changed substantially — review before upgrading.
+
+### Added
+
+- **Four protocols:** SunSpec (on Modbus), OCPP (WebSocket), IEEE 2030.5
+  (mutual-TLS shape + `/dcap`) and OpenADR (3 and 2.0b).
+- **Identify mode** (`core.ModeIdentify`, `otprobe --identify`): each protocol's
+  standard read-only identity request fills a structured `core.Identity`
+  (vendor, product, model, version, serial, name, attributes).
+- **UDP and TLS probing:** BACnet/IP and PROFINET are now fingerprinted over
+  UDP (previously, incorrectly, over TCP), EtherNet/IP over both TCP and UDP
+  ListIdentity, and any TCP probe can run over TLS via `Target.TLS` or
+  `tls://`.
+- **Graded confidence** on a shared scale, with inspectable `Evidence` and a
+  stable `Fingerprint` signature per result; `Variant` distinguishes
+  S7comm-plus, OCPP versions, OpenADR versions and the like.
+- **Port-aware engine:** probes the target port's likely protocols first,
+  early-stops on a confident match (while still running refinements such as
+  SunSpec over Modbus), stops a TCP scan on a refused port, and supports
+  parallel scanning, pacing and a conservative `SafeEngineConfig`.
+- **`otprobe` rewrite:** `detect <host>` with schemes, `--identify`, `--safe`,
+  `--protocol`/`--exclude`, `--format text|json|table`, `--trace`, `--debug`;
+  plus `list` and `version`.
+- **Interop suite** (`interop/`, build tag `interop`): detection checked
+  against the pinned, published reference servers of the `*-interop` suites.
+- **Generated CIP catalogue:** EtherNet/IP vendor and device-type names are
+  generated from `go-ethernetip` (`internal/cmd/gencip`), keeping the library
+  dependency-free.
+
+### Changed
+
+- New package layout: `core` (engine, registry, result model, typed errors),
+  `internal/{wire,iso,mbap,httpx,fpx}`, one package per protocol, `cmd/otprobe`.
+- `core.Protocol` is a slug-and-name type with text marshalling and aliases;
+  numeric values are stable and append-only.
+- Fingerprinters now declare themselves with `core.Info` (transport, ports,
+  priority, intrusiveness, refines) and implement `Detect(ctx, target, opts)`.
+
+### Removed
+
+- The vendored Wireshark dissector sources (`wireshark/`, GPL-licensed) are no
+  longer part of the module; the protocol references live in `FINGERPRINTS.md`.
+
 ## v0.0.3
 
 **Date:** 2026-07-30

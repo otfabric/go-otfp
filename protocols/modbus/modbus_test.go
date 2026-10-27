@@ -4,250 +4,180 @@ package modbus
 
 import (
 	"context"
-	"encoding/binary"
-	"net"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/otfabric/go-otfp/core"
+	"github.com/otfabric/go-otfp/internal/mbap"
+	"github.com/otfabric/go-otfp/internal/testsrv"
 )
 
-// startMockServer starts a TCP server that accepts one connection,
-// reads data, and responds with the provided response bytes.
-func startMockServer(t *testing.T, response []byte) (string, func()) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to start mock server: %v", err)
-	}
-
-	go func() {
-		conn, err := ln.Accept()
-		if err != nil {
-			return
+// device answers like a Modbus server with the given identification
+// objects, split into pages of perPage objects.
+func device(objs [][2]string, perPage int, supportFC43 bool) testsrv.Handler {
+	return func(req []byte) ([]byte, bool) {
+		if len(req) < 8 {
+			return nil, true
 		}
-		defer conn.Close() //nolint:errcheck
-
-		buf := make([]byte, 1024)
-		_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		_, _ = conn.Read(buf)
-
-		if response != nil {
-			_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-			_, _ = conn.Write(response)
+		tid := uint16(req[0])<<8 | uint16(req[1])
+		unit, fc := req[6], req[7]
+		switch {
+		case fc == mbap.FCEncapsulated && supportFC43:
+			start := int(req[10])
+			end := min(start+perPage, len(objs))
+			more, next := byte(0), byte(0)
+			if end < len(objs) {
+				more, next = 0xFF, byte(end)
+			}
+			pdu := []byte{fc, 0x0E, req[9], 0x82, more, next, byte(end - start)}
+			for i := start; i < end; i++ {
+				pdu = append(pdu, byte(i), byte(len(objs[i][1])))
+				pdu = append(pdu, objs[i][1]...)
+			}
+			return mbap.Request(tid, unit, pdu...), false
+		case fc == mbap.FCReadHoldingRegisters:
+			return mbap.Request(tid, unit, fc, 2, 0x12, 0x34), false
+		case fc == mbap.FCEncapsulated:
+			return nil, true // close, like NModbus
 		}
-	}()
-
-	return ln.Addr().String(), func() { _ = ln.Close() }
-}
-
-// buildModbusResponse creates a valid Modbus TCP response frame.
-func buildModbusResponse(transactionID uint16, unitID byte, fc byte, data []byte) []byte {
-	frame := make([]byte, 7+1+len(data))
-	binary.BigEndian.PutUint16(frame[0:2], transactionID)
-	binary.BigEndian.PutUint16(frame[2:4], 0) // Protocol ID
-	binary.BigEndian.PutUint16(frame[4:6], uint16(2+len(data)))
-	frame[6] = unitID
-	frame[7] = fc
-	copy(frame[8:], data)
-	return frame
-}
-
-func parseAddr(addr string) (string, int) {
-	host, portStr, _ := net.SplitHostPort(addr)
-	port := 0
-	for _, c := range portStr {
-		port = port*10 + int(c-'0')
+		return mbap.Request(tid, unit, fc|0x80, 0x01), false
 	}
-	return host, port
 }
 
-func TestModbusDetectValidResponse(t *testing.T) {
-	// Build a valid Modbus exception response (FC 0x2B with exception bit set).
-	resp := buildModbusResponse(probeTransactionID, 0x01, fcReadDeviceID|exceptionMask, []byte{0x01})
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
+var objects = [][2]string{
+	{"0", "otfabric"}, {"1", "MBI-BASELINE"}, {"2", "1.0"}, {"3", "https://otfabric.io"},
+	{"4", "Interop Server"}, {"5", "IS-1"}, {"6", "baseline"},
+}
 
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
+func TestDetectIdentify(t *testing.T) {
+	target := testsrv.TCP(t, device(objects, 3, true))
+	r, err := New().Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify, Trace: true})
 	if err != nil {
-		t.Fatalf("Detect error: %v", err)
+		t.Fatal(err)
 	}
-	if !result.Matched {
-		t.Error("Expected match for valid Modbus response")
+	if !r.Matched || r.Confidence != core.ConfidenceCertain {
+		t.Fatalf("result %v", r)
 	}
-	if result.Confidence < 0.5 {
-		t.Errorf("Confidence too low: %f", result.Confidence)
+	id := r.Identity
+	if id == nil || id.Vendor != "otfabric" || id.Product != "Interop Server" || id.Model != "IS-1" ||
+		id.Version != "1.0" || id.Attributes["productCode"] != "MBI-BASELINE" ||
+		id.Attributes["userApplicationName"] != "baseline" || id.Attributes["vendorUrl"] != "https://otfabric.io" {
+		t.Fatalf("identity %+v", id)
 	}
-	t.Logf("Result: %s", result)
+	if len(r.Exchanges) != 3 {
+		t.Fatalf("%d exchanges, want 3 pages", len(r.Exchanges))
+	}
+	if r.Fingerprint == nil || r.Fingerprint.Signature != "fc=0x2b;resp=normal;unit=1;conf=0x82" {
+		t.Fatalf("fingerprint %v", r.Fingerprint)
+	}
 }
 
-func TestModbusDetectNormalResponse(t *testing.T) {
-	// Build a valid normal Modbus FC43 response.
-	meiData := []byte{meiType, readDevIDCode, 0x01, 0x00, 0x00, 0x01, 0x00, 0x06, 'V', 'e', 'n', 'd', 'o', 'r'}
-	resp := buildModbusResponse(probeTransactionID, 0x01, fcReadDeviceID, meiData)
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
+func TestDetectModeNoIdentity(t *testing.T) {
+	target := testsrv.TCP(t, device(objects, 10, true))
+	r, err := New().Detect(context.Background(), target, core.Options{})
+	if err != nil || !r.Matched {
+		t.Fatalf("%v %v", r, err)
+	}
+	// Basic category still yields what came back.
+	if r.Identity == nil || r.Identity.Vendor != "otfabric" {
+		t.Fatalf("identity %+v", r.Identity)
+	}
+}
 
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
+func TestDetectException(t *testing.T) {
+	target := testsrv.TCP(t, func(req []byte) ([]byte, bool) {
+		return mbap.Request(uint16(req[0])<<8|uint16(req[1]), req[6], req[7]|0x80, 0x01), false
 	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
+	r, err := New().Detect(context.Background(), target, core.Options{})
+	if err != nil || !r.Matched || r.Confidence != core.ConfidenceCertain {
+		t.Fatalf("%v %v", r, err)
 	}
-	if !result.Matched {
-		t.Error("Expected match for valid Modbus response")
+	if r.Identity != nil {
+		t.Fatalf("identity from an exception: %+v", r.Identity)
 	}
-	if result.Confidence < 0.8 {
-		t.Errorf("Confidence too low for normal response: %f", result.Confidence)
-	}
-	t.Logf("Result: %s", result)
 }
 
-func TestModbusDetectInvalidProtocolID(t *testing.T) {
-	// Response with wrong Protocol ID (not 0).
-	resp := buildModbusResponse(probeTransactionID, 0x01, fcReadDeviceID, nil)
-	binary.BigEndian.PutUint16(resp[2:4], 0x0001) // Wrong protocol ID
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
+func TestRegularFallsBackToBasic(t *testing.T) {
+	target := testsrv.TCP(t, func(req []byte) ([]byte, bool) {
+		tid := uint16(req[0])<<8 | uint16(req[1])
+		if req[9] == readRegular {
+			return mbap.Request(tid, req[6], 0xAB, 0x03), false
+		}
+		return mbap.Request(tid, req[6], 0x2B, 0x0E, 0x01, 0x01, 0, 0, 1, 0, 4, 'A', 'c', 'm', 'e'), false
 	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Should not match with wrong Protocol ID")
+	r, err := New().Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify})
+	if err != nil || r.Identity == nil || r.Identity.Vendor != "Acme" {
+		t.Fatalf("%v %v", r, err)
 	}
 }
 
-func TestModbusDetectTruncatedResponse(t *testing.T) {
-	// Response too short.
-	resp := []byte{0x13, 0x37, 0x00}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
+func TestClosesOnFC43(t *testing.T) {
+	target := testsrv.TCP(t, device(nil, 1, false))
+	// Passive only: the close is all we learn.
+	r, err := New().Detect(context.Background(), target, core.Options{})
+	if err != nil || r.Matched {
+		t.Fatalf("passive: %v %v", r, err)
+	}
+	r, err = New().Detect(context.Background(), target, core.Options{MaxIntrusiveness: core.ReadOnly, Trace: true})
+	if err != nil || !r.Matched || r.Confidence != core.ConfidenceCertain {
+		t.Fatalf("read-only: %v %v", r, err)
+	}
+	if len(r.Exchanges) != 2 {
+		t.Fatalf("%d exchanges", len(r.Exchanges))
+	}
+}
 
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
+func TestNotModbus(t *testing.T) {
+	cases := map[string][]byte{
+		"http":      []byte("HTTP/1.1 400 Bad Request\r\n\r\n"),
+		"wrong pid": {0x4F, 0x54, 0x00, 0x01, 0x00, 0x03, 0x01, 0x2B, 0x00},
+		"wrong tid": mbap.Request(0x1111, 1, 0x2B, 0x0E, 0x01, 0x01, 0, 0, 0),
+		"wrong fc":  mbap.Request(probeTID, 1, 0x03, 0x02, 0, 0),
+		"bad exc":   mbap.Request(probeTID, 1, 0xAB, 0x55),
+	}
+	for name, resp := range cases {
+		t.Run(name, func(t *testing.T) {
+			target := testsrv.TCP(t, testsrv.Script(resp))
+			r, err := New().Detect(context.Background(), target, core.Options{})
+			if err != nil || r.Matched {
+				t.Fatalf("%v %v", r, err)
+			}
+		})
+	}
+}
+
+func TestTimeoutAndRefused(t *testing.T) {
+	target := testsrv.TCP(t, testsrv.Script())
+	target.Timeout = 200 * time.Millisecond
+	_, err := New().Detect(context.Background(), target, core.Options{})
+	var te *core.TimeoutError
+	if !errors.As(err, &te) {
+		t.Fatalf("silent: %v", err)
+	}
+	_, err = New().Detect(context.Background(), testsrv.Closed(t), core.Options{})
+	var ce *core.ConnectionError
+	if !errors.As(err, &ce) || !ce.Refused() {
+		t.Fatalf("closed: %v", err)
+	}
+}
+
+func TestUnitConfig(t *testing.T) {
+	if NewWithConfig(Config{UnitIDSet: true}).unit != 0 || New().unit != 1 || NewWithConfig(Config{UnitID: 7}).unit != 7 {
+		t.Fatal("unit selection")
+	}
+	if New().Info().Protocol != core.ProtocolModbus {
+		t.Fatal("info")
+	}
+}
+
+func FuzzParseDeviceID(f *testing.F) {
+	f.Add([]byte{0x0E, 0x01, 0x01, 0, 0, 1, 0, 4, 'A', 'c', 'm', 'e'})
+	f.Add([]byte{0x0E, 0x01, 0x01, 0xFF, 3, 9, 0, 200})
+	f.Fuzz(func(t *testing.T, b []byte) {
+		d, err := parseDeviceID(b)
+		if err == nil {
+			fillIdentity(&core.Identity{}, d.objects)
+		}
 	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	if result.Matched {
-		t.Error("Should not match truncated response")
-	}
-}
-
-func TestModbusDetectNoResponse(t *testing.T) {
-	// Server that closes immediately.
-	addr, cleanup := startMockServer(t, nil)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	_, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 1 * time.Second,
-	})
-
-	// Should return error or no match, not panic.
-	_ = err
-}
-
-func TestModbusDetectConnectionRefused(t *testing.T) {
-	fp := New()
-	_, err := fp.Detect(context.Background(), core.Target{
-		IP:      "127.0.0.1",
-		Port:    1, // Very unlikely to have a listener.
-		Timeout: 1 * time.Second,
-	})
-
-	if err == nil {
-		t.Error("Expected error for connection refused")
-	}
-}
-
-func TestModbusDetectRandomBinary(t *testing.T) {
-	// Random binary data (not Modbus).
-	resp := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03}
-	addr, cleanup := startMockServer(t, resp)
-	defer cleanup()
-
-	host, port := parseAddr(addr)
-	fp := New()
-	result, err := fp.Detect(context.Background(), core.Target{
-		IP:      host,
-		Port:    port,
-		Timeout: 2 * time.Second,
-	})
-
-	if err != nil {
-		t.Fatalf("Detect error: %v", err)
-	}
-	// Random data should not match (Protocol ID won't be 0).
-	if result.Matched && result.Confidence > 0.5 {
-		t.Errorf("Random binary should not match with high confidence: %f", result.Confidence)
-	}
-}
-
-func TestModbusName(t *testing.T) {
-	fp := New()
-	if fp.Name() != core.ProtocolModbus {
-		t.Errorf("Name() = %s, want %s", fp.Name(), core.ProtocolModbus)
-	}
-}
-
-func TestBuildProbe(t *testing.T) {
-	probe := buildProbe()
-
-	// Verify MBAP header.
-	if len(probe) != mbapHeaderSize+4 {
-		t.Fatalf("probe length = %d, want %d", len(probe), mbapHeaderSize+4)
-	}
-
-	tid := binary.BigEndian.Uint16(probe[0:2])
-	if tid != probeTransactionID {
-		t.Errorf("Transaction ID = 0x%04X, want 0x%04X", tid, probeTransactionID)
-	}
-
-	pid := binary.BigEndian.Uint16(probe[2:4])
-	if pid != 0 {
-		t.Errorf("Protocol ID = %d, want 0", pid)
-	}
-
-	length := binary.BigEndian.Uint16(probe[4:6])
-	if length != 5 {
-		t.Errorf("Length = %d, want 5", length)
-	}
-
-	if probe[6] != 0x01 {
-		t.Errorf("Unit ID = 0x%02X, want 0x01", probe[6])
-	}
-
-	if probe[7] != fcReadDeviceID {
-		t.Errorf("FC = 0x%02X, want 0x%02X", probe[7], fcReadDeviceID)
-	}
 }

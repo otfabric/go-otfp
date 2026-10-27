@@ -1,0 +1,17 @@
+# Codecov configuration for go-otfp. CI uploads coverage for the library
+# packages; the CLI, the generators and the test helpers are not measured.
+coverage:
+  status:
+    project:
+      default:
+        target: 80%
+        threshold: 1%
+    patch:
+      default:
+        target: 70%
+
+ignore:
+  - "cmd/**"
+  - "internal/cmd/**"
+  - "internal/testsrv/**"
+  - "interop/**"

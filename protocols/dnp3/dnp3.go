@@ -1,230 +1,391 @@
 // SPDX-License-Identifier: MIT
 
-// Package dnp3 implements DNP3 (Distributed Network Protocol 3) fingerprinting
-// over TCP.
+// Package dnp3 fingerprints DNP3 over TCP (IEEE 1815).
 //
-// DNP3 is the dominant SCADA protocol in North American power utilities.
-// Even over TCP, DNP3 retains its link-layer framing with start bytes 0x05 0x64.
-// This detector sends a minimal Link Status Request frame and validates the
-// link-layer response. No application-layer objects are parsed.
+// Detection sends data-link REQUEST_LINK_STATUS frames, which carry no
+// application data and are answered in any state: first to the self
+// address 0xFFFC, then, in the same write, to the configured candidate
+// outstation addresses. A LINK_STATUS reply with the 0x0564 start octets,
+// a valid header CRC and the secondary direction proves DNP3 and reveals the
+// outstation and master addresses. Broadcast addresses are useless here:
+// outstations never answer them.
+//
+// In identify mode the device attributes (group 0, variation 254, all
+// attributes) are read with an unconfirmed READ.
 package dnp3
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"math"
 
 	"github.com/otfabric/go-otfp/core"
-	"github.com/otfabric/go-otfp/transport"
+	"github.com/otfabric/go-otfp/internal/fpx"
+	"github.com/otfabric/go-otfp/internal/wire"
 )
 
+const proto = core.ProtocolDNP3
+
+// Link-layer constants.
 const (
-	protocolName = core.ProtocolDNP3
+	start0, start1 = 0x05, 0x64
+	headerLen      = 10
+	maxFrame       = 292
 
-	// DNP3 link-layer constants.
-	startByte1 byte = 0x05
-	startByte2 byte = 0x64
+	ctrlDIR = 0x80
+	ctrlPRM = 0x40
+	ctrlDFC = 0x10
 
-	// Function codes (link layer).
-	fcLinkStatusReq  byte = 0x09 // Request Link Status
-	fcLinkStatusResp byte = 0x0B // Respond Link Status
+	fcRequestLinkStatus = 0x09 // primary
+	fcUnconfirmedData   = 0x04 // primary
+	fcLinkStatus        = 0x0B // secondary
+	fcNotSupported      = 0x0F // secondary
 
-	// Direction/Primary bits in control byte.
-	dirPrimary byte = 0x40 // DIR=1: from primary
-	dirResp    byte = 0x00 // DIR=0: from secondary
-
-	// Frame sizes.
-	minFrameSize = 10 // start(2) + length(1) + control(1) + dest(2) + source(2) + crc(2)
-
-	maxResponseSize = 292 // Max DNP3 frame = 292 bytes
+	selfAddress = 0xFFFC
+	maxFrames   = 8
 )
 
-// Fingerprinter detects DNP3 protocol presence over TCP.
-type Fingerprinter struct{}
-
-// New creates a new DNP3 fingerprinter.
-func New() *Fingerprinter {
-	return &Fingerprinter{}
+// Config configures the fingerprinter.
+type Config struct {
+	// Outstations are the addresses probed after the self address 0xFFFC.
+	// The default is 10, 1, 1024, 0, 3 and 4.
+	Outstations []uint16
+	// Master is the source address of the probes. The default is 1;
+	// outstations commonly answer their configured master only.
+	Master uint16
 }
 
-// Name returns the protocol identifier.
-func (f *Fingerprinter) Name() core.Protocol {
-	return protocolName
+// Fingerprinter detects DNP3.
+type Fingerprinter struct {
+	outstations []uint16
+	master      uint16
 }
 
-// Priority returns the detection order (lower = tested first).
-func (f *Fingerprinter) Priority() int { return 50 }
+// New returns a DNP3 fingerprinter with the default addresses.
+func New() *Fingerprinter { return NewWithConfig(Config{}) }
 
-// Detect attempts to identify DNP3 on the target by sending a Link Status
-// Request and validating the response.
-func (f *Fingerprinter) Detect(ctx context.Context, target core.Target) (core.Result, error) {
-	conn, err := transport.Dial(ctx, target.Addr(), target.EffectiveTimeout())
+// NewWithConfig returns a fingerprinter with the given configuration.
+func NewWithConfig(c Config) *Fingerprinter {
+	f := &Fingerprinter{outstations: c.Outstations, master: c.Master}
+	if len(f.outstations) == 0 {
+		f.outstations = []uint16{10, 1, 1024, 0, 3, 4}
+	}
+	if f.master == 0 {
+		f.master = 1
+	}
+	return f
+}
+
+// Info describes the fingerprinter.
+func (f *Fingerprinter) Info() core.Info {
+	return core.Info{
+		Protocol:      proto,
+		Network:       core.TCP,
+		Ports:         []int{20000, 19999},
+		Priority:      40,
+		Intrusiveness: core.Passive,
+		Description:   "data link REQUEST_LINK_STATUS to 0xFFFC and candidate outstations; READ g0v254 device attributes in identify mode",
+	}
+}
+
+// Detect probes target.
+func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
+	b := fpx.New(proto)
+	s, err := wire.Dial(ctx, proto, target, opts)
 	if err != nil {
-		return core.NoMatch(protocolName), core.ClassifyDial(protocolName, target.Addr(), err)
+		return core.NoMatch(proto), err
 	}
-	defer conn.Close() //nolint:errcheck
+	defer s.Close() //nolint:errcheck
 
-	probe := buildProbe()
+	var burst []byte
+	dests := append([]uint16{selfAddress}, f.outstations...)
+	for _, d := range dests {
+		if d == selfAddress && len(burst) > 0 {
+			continue
+		}
+		burst = append(burst, Frame(ctrlDIR|ctrlPRM|fcRequestLinkStatus, d, f.master, nil)...)
+	}
+	resp, err := s.RoundTrip("link-status", burst, Framer, maxFrame)
+	var status *Header
+	for i := 0; i < maxFrames; i++ {
+		if err != nil {
+			break
+		}
+		if h, ok := f.judge(b, resp); ok {
+			status = &h
+			break
+		}
+		if b.Confidence() == 0 && len(resp) > 0 && (len(resp) < 2 || resp[0] != start0 || resp[1] != start1) {
+			break // not DNP3 at all
+		}
+		resp, err = s.Next("frame", Framer, maxFrame)
+	}
+	if status == nil {
+		if err != nil && !errors.Is(err, wire.ErrClosed) && b.Confidence() == 0 {
+			return b.Result("dnp3.link", "no DNP3 response", s), err
+		}
+		if b.Confidence() >= core.MatchThreshold {
+			return b.Result("dnp3.link", "DNP3 frames, but no link status", s), nil
+		}
+		return b.Result("dnp3.link", "no DNP3 link status", s), nil
+	}
+	if opts.Mode == core.ModeIdentify {
+		f.identify(b, s, status.Src, status.Dst)
+	}
+	return b.Result("dnp3.link", fmt.Sprintf("DNP3 outstation %d", status.Src), s), nil
+}
 
-	resp, err := conn.SendReceive(probe, maxResponseSize)
+// judge scores one frame; it reports true for a secondary LINK_STATUS (or
+// NOT_SUPPORTED) reply.
+func (f *Fingerprinter) judge(b *fpx.Builder, frame []byte) (Header, bool) {
+	h, err := ParseHeader(frame)
 	if err != nil {
-		return core.NoMatch(protocolName), core.ClassifyIO(protocolName, target.Addr(), "sendreceive", err)
+		if len(frame) >= 2 && frame[0] == start0 && frame[1] == start1 {
+			b.Score(core.ConfidenceLow, "DNP3 start octets, but "+err.Error())
+		}
+		return h, false
 	}
-
-	if isModbusErrorEcho(probe, resp) {
-		return core.NoMatch(protocolName).WithExchange("probe", probe, resp), nil
+	if h.Ctrl&ctrlDIR != 0 || h.Ctrl&ctrlPRM != 0 {
+		b.Score(core.ConfidenceMedium, "valid DNP3 frame, but not a secondary reply")
+		return h, false
 	}
-
-	return validateResponse(resp).WithExchange("probe", probe, resp), nil
+	fc := h.Ctrl & 0x0F
+	if fc != fcLinkStatus && fc != fcNotSupported {
+		b.Score(core.ConfidenceMedium, fmt.Sprintf("valid DNP3 secondary frame with function %d", fc))
+		return h, false
+	}
+	b.Score(core.ConfidenceCertain, fmt.Sprintf("LINK_STATUS from outstation %d to master %d, header CRC valid", h.Src, h.Dst))
+	b.Sig("ctrl", fmt.Sprintf("0x%02x", h.Ctrl))
+	b.Sig("dfc", fmt.Sprint(h.Ctrl&ctrlDFC != 0))
+	b.Meta("outstation", fmt.Sprint(h.Src))
+	b.Meta("master", fmt.Sprint(h.Dst))
+	b.Identity().Set("outstationAddress", fmt.Sprint(h.Src))
+	if fc == fcNotSupported {
+		b.Variant("link status not supported")
+	}
+	return h, true
 }
 
-// buildProbe constructs a minimal DNP3 Link Status Request frame.
-func buildProbe() []byte {
-	// Frame: start(2) + length(1) + control(1) + dest(2) + source(2) + crc(2)
-	frame := make([]byte, 10)
-	frame[0] = startByte1
-	frame[1] = startByte2
-	frame[2] = 0x05                         // Length: 5 bytes of data (control + dest + source)
-	frame[3] = dirPrimary | fcLinkStatusReq // Control: DIR=1, PRM=0, FC=9
-	frame[4] = 0x01                         // Destination address low
-	frame[5] = 0x00                         // Destination address high
-	frame[6] = 0x00                         // Source address low
-	frame[7] = 0x00                         // Source address high
-
-	// Compute CRC-16 over bytes 0..7.
-	crc := crc16DNP(frame[0:8])
-	frame[8] = byte(crc & 0xFF)
-	frame[9] = byte((crc >> 8) & 0xFF)
-
-	return frame
-}
-
-// isModbusErrorEcho returns true if the response matches the Modbus error echo
-// pattern: same length, byte 7 has the error bit (0x80) set relative to the probe,
-// byte 8 is a valid Modbus exception code (1-11), and all other bytes are identical.
-func isModbusErrorEcho(probe, resp []byte) bool {
-	if len(probe) != len(resp) || len(probe) < 9 {
-		return false
+// identify reads all device attributes.
+func (f *Fingerprinter) identify(b *fpx.Builder, s *wire.Session, outstation, master uint16) {
+	// Transport FIR|FIN seq 0; application FIR|FIN seq 0, READ, g0v254
+	// qualifier 0x06 (all objects).
+	user := []byte{0xC0, 0xC0, 0x01, 0x00, 0xFE, 0x06}
+	req := Frame(ctrlDIR|ctrlPRM|fcUnconfirmedData, outstation, master, user)
+	frame, err := s.RoundTrip("read-g0v254", req, Framer, maxFrame)
+	var apdu []byte
+	for i := 0; i < 32 && err == nil; i++ {
+		h, herr := ParseHeader(frame)
+		if herr == nil && h.Ctrl&ctrlDIR == 0 && h.Ctrl&ctrlPRM != 0 && len(h.Data) > 0 {
+			th := h.Data[0]
+			if th&0x40 != 0 { // FIR restarts the fragment
+				apdu = apdu[:0]
+			}
+			apdu = append(apdu, h.Data[1:]...)
+			if th&0x80 != 0 { // FIN
+				break
+			}
+		}
+		frame, err = s.Next("response", Framer, maxFrame)
 	}
-	for i := range probe {
-		if probe[i] != resp[i] {
-			if i == 7 && resp[7] == probe[7]|0x80 {
-				continue
-			}
-			if i == 8 && resp[8] >= 0x01 && resp[8] <= 0x0B {
-				continue
-			}
-			return false
+	attrs, err := ParseAttributes(apdu)
+	if err != nil {
+		b.Evidence("device attributes not read: " + err.Error())
+		return
+	}
+	id := b.Identity()
+	for v, a := range attrs {
+		switch v {
+		case 252:
+			id.Vendor = a
+		case 250:
+			id.Product = a
+		case 242:
+			id.Version = a
+		case 248:
+			id.Serial = a
+		case 247:
+			id.Name = a
+		case 243:
+			id.Set("hardwareVersion", a)
+		case 245:
+			id.Set("location", a)
+		case 246:
+			id.Set("userId", a)
+		case 244:
+			id.Set("owner", a)
+		case 249:
+			id.Set("subsetAndConformance", a)
+		default:
+			id.Set(fmt.Sprintf("g0v%d", v), a)
 		}
 	}
-	return resp[7] == probe[7]|0x80
+	b.Evidence(fmt.Sprintf("device attributes: %d read", len(attrs)))
 }
 
-// validateResponse checks the response against DNP3 link-layer expectations.
-func validateResponse(resp []byte) core.Result {
-	if len(resp) < minFrameSize {
-		return core.NoMatch(protocolName)
-	}
-
-	var confidence core.Confidence
-	details := ""
-
-	// Check 1: Start bytes.
-	if resp[0] != startByte1 || resp[1] != startByte2 {
-		return core.NoMatch(protocolName)
-	}
-
-	// Check 2: CRC validation (mandatory for valid DNP3 frames).
-	headerCRC := uint16(resp[8]) | uint16(resp[9])<<8
-	computedCRC := crc16DNP(resp[0:8])
-	if headerCRC != computedCRC {
-		return core.NoMatch(protocolName)
-	}
-
-	confidence += 0.60
-	details = "DNP3 start bytes 0x0564, Valid CRC"
-
-	// Check 3: Valid length field.
-	length := resp[2]
-	if length >= 5 && int(length) <= len(resp) {
-		confidence += 0.20
-		details += fmt.Sprintf(", Length=%d", length)
-	}
-
-	// Check 4: Control field - response characteristics.
-	control := resp[3]
-	fc := control & 0x0F
-	// DIR bit = 0 means from secondary (response direction).
-	// Valid response FCs: 0x00 (ACK), 0x01 (NACK), 0x0B (Link Status).
-	switch {
-	case control&0x40 == dirResp && fc == fcLinkStatusResp:
-		confidence += 0.20
-		details += ", Link Status response"
-	case control&0x40 == dirResp && (fc == 0x00 || fc == 0x01):
-		confidence += 0.20
-		details += fmt.Sprintf(", Response FC=0x%02X", fc)
-	case control&0x40 == dirPrimary:
-		// Primary station responding - still valid DNP3.
-		confidence += 0.10
-		details += ", Primary frame detected"
-	}
-
-	if confidence > 1.0 {
-		confidence = 1.0
-	}
-
-	result := core.Match(protocolName, confidence, details)
-	result.Fingerprint = &core.Fingerprint{
-		ID:        "dnp3.link_status",
-		Signature: details,
-	}
-	return result
+// Header is a parsed data-link frame.
+type Header struct {
+	Ctrl     byte
+	Dst, Src uint16
+	// Data is the user data with the block CRCs removed.
+	Data []byte
 }
 
-// crc16DNP computes the DNP3 CRC-16 over the given data.
-// DNP3 uses a CRC-16 with polynomial 0x3D65 (bit-reversed: 0xA6BC).
-// The lookup table approach matches the DNP3 specification.
-func crc16DNP(data []byte) uint16 {
-	crc := uint16(0x0000)
-	for _, b := range data {
-		idx := (crc ^ uint16(b)) & 0xFF
-		crc = (crc >> 8) ^ crcTable[idx]
+// Framer reads one data-link frame.
+var Framer wire.Framer = func(b []byte) int {
+	if len(b) >= 1 && b[0] != start0 || len(b) >= 2 && b[1] != start1 {
+		return -1
 	}
-	return ^crc
+	if len(b) < 3 {
+		return 0
+	}
+	return FrameLen(b[2])
 }
 
-// crcTable is the precomputed DNP3 CRC-16 lookup table.
-// Generated from polynomial 0xA6BC (bit-reversed 0x3D65).
-var crcTable = [256]uint16{
-	0x0000, 0x365E, 0x6CBC, 0x5AE2, 0xD978, 0xEF26, 0xB5C4, 0x839A,
-	0xFF89, 0xC9D7, 0x9335, 0xA56B, 0x26F1, 0x10AF, 0x4A4D, 0x7C13,
-	0xB26B, 0x8435, 0xDED7, 0xE889, 0x6B13, 0x5D4D, 0x07AF, 0x31F1,
-	0x4DE2, 0x7BBC, 0x215E, 0x1700, 0x949A, 0xA2C4, 0xF826, 0xCE78,
-	0x29AF, 0x1FF1, 0x4513, 0x734D, 0xF0D7, 0xC689, 0x9C6B, 0xAA35,
-	0xD626, 0xE078, 0xBA9A, 0x8CC4, 0x0F5E, 0x3900, 0x63E2, 0x55BC,
-	0x9BC4, 0xAD9A, 0xF778, 0xC126, 0x42BC, 0x74E2, 0x2E00, 0x185E,
-	0x644D, 0x5213, 0x08F1, 0x3EAF, 0xBD35, 0x8B6B, 0xD189, 0xE7D7,
-	0x535E, 0x6500, 0x3FE2, 0x09BC, 0x8A26, 0xBC78, 0xE69A, 0xD0C4,
-	0xACD7, 0x9A89, 0xC06B, 0xF635, 0x75AF, 0x43F1, 0x1913, 0x2F4D,
-	0xE135, 0xD76B, 0x8D89, 0xBBD7, 0x384D, 0x0E13, 0x54F1, 0x62AF,
-	0x1EBC, 0x28E2, 0x7200, 0x445E, 0xC7C4, 0xF19A, 0xAB78, 0x9D26,
-	0x7AF1, 0x4CAF, 0x164D, 0x2013, 0xA389, 0x95D7, 0xCF35, 0xF96B,
-	0x8578, 0xB326, 0xE9C4, 0xDF9A, 0x5C00, 0x6A5E, 0x30BC, 0x06E2,
-	0xC89A, 0xFEC4, 0xA426, 0x9278, 0x11E2, 0x27BC, 0x7D5E, 0x4B00,
-	0x3713, 0x014D, 0x5BAF, 0x6DF1, 0xEE6B, 0xD835, 0x82D7, 0xB489,
-	0xA6BC, 0x90E2, 0xCA00, 0xFC5E, 0x7FC4, 0x499A, 0x1378, 0x2526,
-	0x5935, 0x6F6B, 0x3589, 0x03D7, 0x804D, 0xB613, 0xECF1, 0xDAAF,
-	0x14D7, 0x2289, 0x786B, 0x4E35, 0xCDAF, 0xFBF1, 0xA113, 0x974D,
-	0xEB5E, 0xDD00, 0x87E2, 0xB1BC, 0x3226, 0x0478, 0x5E9A, 0x68C4,
-	0x8F13, 0xB94D, 0xE3AF, 0xD5F1, 0x566B, 0x6035, 0x3AD7, 0x0C89,
-	0x709A, 0x46C4, 0x1C26, 0x2A78, 0xA9E2, 0x9FBC, 0xC55E, 0xF300,
-	0x3D78, 0x0B26, 0x51C4, 0x679A, 0xE400, 0xD25E, 0x88BC, 0xBEE2,
-	0xC2F1, 0xF4AF, 0xAE4D, 0x9813, 0x1B89, 0x2DD7, 0x7735, 0x416B,
-	0xF5E2, 0xC3BC, 0x995E, 0xAF00, 0x2C9A, 0x1AC4, 0x4026, 0x7678,
-	0x0A6B, 0x3C35, 0x66D7, 0x5089, 0xD313, 0xE54D, 0xBFAF, 0x89F1,
-	0x4789, 0x71D7, 0x2B35, 0x1D6B, 0x9EF1, 0xA8AF, 0xF24D, 0xC413,
-	0xB800, 0x8E5E, 0xD4BC, 0xE2E2, 0x6178, 0x5726, 0x0DC4, 0x3B9A,
-	0xDC4D, 0xEA13, 0xB0F1, 0x86AF, 0x0535, 0x336B, 0x6989, 0x5FD7,
-	0x23C4, 0x159A, 0x4F78, 0x7926, 0xFABC, 0xCCE2, 0x9600, 0xA05E,
-	0x6E26, 0x5878, 0x029A, 0x34C4, 0xB75E, 0x8100, 0xDBE2, 0xEDBC,
-	0x91AF, 0xA7F1, 0xFD13, 0xCB4D, 0x48D7, 0x7E89, 0x246B, 0x1235,
+// FrameLen returns the octets of a frame with the given LENGTH field, or -1
+// when the length is invalid.
+func FrameLen(length byte) int {
+	if length < 5 {
+		return -1
+	}
+	n := int(length) - 5
+	return headerLen + n + 2*int(math.Ceil(float64(n)/16))
+}
+
+// ParseHeader validates a frame's start octets, length and CRCs.
+func ParseHeader(b []byte) (Header, error) {
+	if len(b) < headerLen {
+		return Header{}, fmt.Errorf("%d octets is shorter than a link header", len(b))
+	}
+	if b[0] != start0 || b[1] != start1 {
+		return Header{}, fmt.Errorf("start octets 0x%02x%02x, want 0x0564", b[0], b[1])
+	}
+	if CRC(b[:8]) != binary.LittleEndian.Uint16(b[8:10]) {
+		return Header{}, fmt.Errorf("header CRC mismatch")
+	}
+	n := FrameLen(b[2])
+	if n < 0 || n != len(b) {
+		return Header{}, fmt.Errorf("LENGTH %d does not match %d octets", b[2], len(b))
+	}
+	h := Header{Ctrl: b[3], Dst: binary.LittleEndian.Uint16(b[4:6]), Src: binary.LittleEndian.Uint16(b[6:8])}
+	for p := b[headerLen:]; len(p) > 0; {
+		k := min(16, len(p)-2)
+		if k <= 0 || CRC(p[:k]) != binary.LittleEndian.Uint16(p[k:k+2]) {
+			return h, fmt.Errorf("data block CRC mismatch")
+		}
+		h.Data = append(h.Data, p[:k]...)
+		p = p[k+2:]
+	}
+	return h, nil
+}
+
+// Frame encodes a data-link frame.
+func Frame(ctrl byte, dst, src uint16, data []byte) []byte {
+	b := []byte{start0, start1, byte(5 + len(data)), ctrl, byte(dst), byte(dst >> 8), byte(src), byte(src >> 8)}
+	b = binary.LittleEndian.AppendUint16(b, CRC(b))
+	for len(data) > 0 {
+		k := min(16, len(data))
+		b = append(b, data[:k]...)
+		b = binary.LittleEndian.AppendUint16(b, CRC(data[:k]))
+		data = data[k:]
+	}
+	return b
+}
+
+var crcTable = func() (t [256]uint16) {
+	for i := range t {
+		c := uint16(i)
+		for j := 0; j < 8; j++ {
+			if c&1 != 0 {
+				c = c>>1 ^ 0xA6BC
+			} else {
+				c >>= 1
+			}
+		}
+		t[i] = c
+	}
+	return t
+}()
+
+// CRC returns the DNP3 CRC-16 of b.
+func CRC(b []byte) uint16 {
+	var c uint16
+	for _, x := range b {
+		c = c>>8 ^ crcTable[byte(c)^x]
+	}
+	return ^c
+}
+
+// ParseAttributes decodes the group 0 objects of an application response
+// fragment (control, function 0x81 or 0x82, IIN, objects) into visible
+// string attributes by variation. Numeric attributes are rendered in
+// decimal.
+func ParseAttributes(apdu []byte) (map[uint8]string, error) {
+	if len(apdu) < 4 {
+		return nil, fmt.Errorf("no application response")
+	}
+	if apdu[1] != 0x81 && apdu[1] != 0x82 {
+		return nil, fmt.Errorf("application function 0x%02x is not a response", apdu[1])
+	}
+	out := map[uint8]string{}
+	p := apdu[4:]
+	for len(p) >= 3 {
+		group, variation, qual := p[0], p[1], p[2]
+		if group != 0 {
+			break
+		}
+		p = p[3:]
+		var count int
+		switch qual {
+		case 0x00:
+			if len(p) < 2 || p[1] < p[0] {
+				return out, fmt.Errorf("bad range")
+			}
+			count, p = int(p[1])-int(p[0])+1, p[2:]
+		case 0x01:
+			if len(p) < 4 {
+				return out, fmt.Errorf("bad range")
+			}
+			lo, hi := binary.LittleEndian.Uint16(p), binary.LittleEndian.Uint16(p[2:])
+			if hi < lo {
+				return out, fmt.Errorf("bad range")
+			}
+			count, p = int(hi-lo)+1, p[4:]
+		default:
+			return out, nil // qualifier we do not decode: keep what we have
+		}
+		for i := 0; i < count; i++ {
+			if len(p) < 2 {
+				return out, fmt.Errorf("attribute truncated")
+			}
+			typ, n := p[0], int(p[1])
+			if len(p) < 2+n {
+				return out, fmt.Errorf("attribute value truncated")
+			}
+			if v := attrString(typ, p[2:2+n]); v != "" {
+				out[variation] = v
+			}
+			p = p[2+n:]
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no device attributes in the response")
+	}
+	return out, nil
+}
+
+func attrString(typ byte, v []byte) string {
+	switch typ {
+	case 1: // visible string
+		return fpx.Clean(string(v))
+	case 2: // unsigned integer
+		var x uint64
+		for i := len(v) - 1; i >= 0; i-- {
+			x = x<<8 | uint64(v[i])
+		}
+		return fmt.Sprint(x)
+	}
+	return ""
 }

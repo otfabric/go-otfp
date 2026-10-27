@@ -1,89 +1,55 @@
-# Errors: otfabric/go-otfp
+# Errors
 
-How go-otfp reports detection failures. Type fields and API surface:
-[API.md — Errors](API.md#errors). Definitions live in package `core`.
+go-otfp separates *"this endpoint does not speak the protocol"* from
+*"detection could not reach a verdict"*. The first is an ordinary non-match
+result; the second is a typed error.
 
-Fingerprinting has two distinct outcomes — do not treat them as interchangeable:
+## Result vs. error
 
-1. **No match** — the probe completed (or was skipped) and the target did not look
-   like this protocol. Reported as a `Result` with `Matched=false` / low confidence,
-   **not** as an `error`.
-2. **Transport / detection error** — dial, timeout, or I/O failed while probing.
-   Reported as a typed Go `error` (often also attached on `Result.Error`).
+`Fingerprinter.Detect` and `Engine.Detect` return `(Result, error)`:
 
-## Quick reference
+| Outcome | `Matched` | `Confidence` | `error` / `Result.Error` |
+|---|---|---|---|
+| identified | true | ≥ `MatchThreshold` | nil |
+| a hint | false | in (0, threshold) | nil |
+| not this protocol | false | 0 | nil |
+| could not decide | false | 0 | a typed error below |
 
-| Situation | How it is reported |
-|-----------|--------------------|
-| Wrong / unknown protocol on the port | `Result` with `Matched=false` (`NoMatch`) — not an error |
-| Dial timeout / deadline | `*TimeoutError` (`ClassifyDial`) |
-| Dial refused / unreachable | `*ConnectionError` (`ClassifyDial`) |
-| Send/receive timeout | `*TimeoutError` (`ClassifyIO`) |
-| Other send/receive failure | `*DetectError` with `Op` (`ClassifyIO`) |
-| Named protocol missing from registry | `*ProtocolNotFoundError` (`Engine.DetectProtocol`) |
-| Malformed response (optional) | `*InvalidResponseError` — detectors usually prefer `NoMatch` |
-
-Prefer:
-
-```go
-import (
-    "errors"
-
-    "github.com/otfabric/go-otfp/core"
-)
-
-result, err := engine.DetectProtocol(ctx, target, core.ProtocolModbus)
-if err != nil {
-    var pnf *core.ProtocolNotFoundError
-    if errors.As(err, &pnf) {
-        // protocol not registered
-        return err
-    }
-}
-
-if result.Error != nil {
-    var te *core.TimeoutError
-    var ce *core.ConnectionError
-    var de *core.DetectError
-    switch {
-    case errors.As(result.Error, &te):
-        // deadline / i/o timeout
-    case errors.As(result.Error, &ce):
-        // refused, unreachable, …
-    case errors.As(result.Error, &de):
-        // send/receive failure (see de.Op)
-    }
-}
-
-if !result.Matched {
-    // probed successfully; not this protocol
-}
-```
+In a `Report`, a per-protocol failure never fails the whole scan: it is
+recorded in that result's `Error` field, and `Scan` itself returns an error
+only for an invalid target or when no fingerprinter applies
+(`ErrNoFingerprinters`).
 
 ## Typed errors
 
-| Type | Fields | Unwrap | Produced by |
-|------|--------|--------|-------------|
-| `TimeoutError` | `Protocol`, `Addr`, `Err` | ✓ | `ClassifyDial` / `ClassifyIO` on timeout |
-| `ConnectionError` | `Protocol`, `Addr`, `Err` | ✓ | `ClassifyDial` on non-timeout dial failure |
-| `DetectError` | `Protocol`, `Op`, `Err` | ✓ | `ClassifyIO` on non-timeout I/O (`Op`: `"sendreceive"`, `"phase1"`, …) |
-| `ProtocolNotFoundError` | `Protocol` | — | `Engine.DetectProtocol` |
-| `InvalidResponseError` | `Protocol`, `Reason` | — | Optional; not used by current detectors for mismatches |
+All wrap an underlying cause (`errors.As` / `Unwrap` work) and name the
+protocol and, where relevant, the address and operation.
 
-## Classification helpers
+- **`TimeoutError`** — a dial, write or read exceeded its deadline. `Op` is
+  `"dial"`, `"write"`, `"read"` or `"tls"`.
+- **`ConnectionError`** — a dial failed for a reason other than a timeout
+  (refused, unreachable, reset, name resolution). `Refused()` reports an
+  actively refused connection — nothing listens there — which ends a TCP
+  scan when `StopOnRefused` is set.
+- **`DetectError`** — an I/O failure during an exchange that is neither a
+  timeout nor a refusal, with the failing `Op`.
+- **`InvalidResponseError`** — a reply that was recognisably the protocol but
+  malformed. Fingerprinters use it only where the distinction matters; most
+  wrong replies are a plain non-match.
+- **`ProtocolNotFoundError`** — `Engine.Detect` was asked for a protocol with
+  no registered fingerprinter (for the target's transport).
+- **`ErrNoFingerprinters`** — `Scan` found no applicable fingerprinter.
 
-Detectors call these instead of wrapping with `fmt.Errorf`:
+## Classifying transport failures
 
-```go
-func ClassifyDial(protocol Protocol, addr string, err error) error
-func ClassifyIO(protocol Protocol, addr, op string, err error) error
-```
+Fingerprinter authors do not build these by hand. `wire.Session` classifies
+its own I/O, and the helpers `core.ClassifyDial(protocol, addr, err)` and
+`core.ClassifyIO(protocol, addr, op, err)` map a raw error to the right type.
+`core.IsTimeout(err)` reports whether an error is a deadline/timeout.
 
-Timeouts are detected via `context.DeadlineExceeded`, `os.ErrDeadlineExceeded`,
-and `net.Error` with `Timeout() == true`.
+## In the CLI
 
-## CLI (`otprobe`)
-
-JSON output maps typed errors to a short `error.type` string:
-`timeout`, `connection`, `invalid_response`, `detection`, or `unknown`.
-See `cmd/otprobe` `classifyError`.
+`otprobe` maps the outcome to an exit code: `0` detected (≥ high
+confidence), `1` no match, `2` a connection or timeout error on any probe,
+`3` bad arguments, `4` matched below the high-confidence threshold. The
+`--format json` output carries each result's `error` string.
