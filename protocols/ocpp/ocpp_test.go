@@ -83,3 +83,41 @@ func TestInfo(t *testing.T) {
 		t.Fatal("info")
 	}
 }
+
+func TestOtherBranches(t *testing.T) {
+	cases := map[string]struct {
+		resp string
+		conf core.Confidence
+		vari string
+	}{
+		"401 other realm": {"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Length: 0\r\n\r\n", core.ConfidenceLow, ""},
+		"ocpp1.6":         {"HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Protocol: ocpp1.6\r\n\r\n", core.ConfidenceCertain, "OCPP 1.6"},
+		"ocpp2.1":         {"HTTP/1.1 101 Switching Protocols\r\nSec-WebSocket-Protocol: ocpp2.1\r\n\r\n", core.ConfidenceCertain, "OCPP 2.1"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			target := testsrv.Raw(t, httpReply(c.resp))
+			r, err := New().Detect(context.Background(), target, core.Options{})
+			if err != nil || r.Confidence != c.conf || r.Variant != c.vari {
+				t.Fatalf("%v %v", r, err)
+			}
+		})
+	}
+	if versionName("ocpp9") != "" {
+		t.Fatal("unknown subprotocol")
+	}
+	if hostHeader(core.Target{Host: "csms.example", Port: 443}) != "csms.example" || hostHeader(core.Target{Host: "h", Port: 9000}) != "h:9000" {
+		t.Fatal("host header")
+	}
+	silent := testsrv.TCP(t, testsrv.Script())
+	silent.Timeout = 200 * time.Millisecond
+	if _, err := New().Detect(context.Background(), silent, core.Options{}); err == nil {
+		t.Fatal("silent CSMS is a timeout")
+	}
+	if _, err := New().Detect(context.Background(), testsrv.Closed(t), core.Options{}); err == nil {
+		t.Fatal("closed")
+	}
+	if NewWithConfig(Config{Path: "/x"}).path != "/x" {
+		t.Fatal("config")
+	}
+}
