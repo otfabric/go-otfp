@@ -78,6 +78,9 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 
 	path := f.path
 	if path == "" {
+		path = target.Path
+	}
+	if path == "" {
 		path = "/ocpp/" + stationID()
 	}
 	host := hostHeader(target)

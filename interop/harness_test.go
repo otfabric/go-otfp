@@ -20,6 +20,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -42,9 +43,15 @@ type adapter struct {
 	// identity, when set, must appear in the detected identity's one-line
 	// string (identify mode).
 	identity string
-	// publicURLPort, when true, passes --public-url http://127.0.0.1:<host>
+	// publicURL, when true, passes --public-url http://127.0.0.1:<host>
 	// (OpenADR needs its externally reachable URL).
 	publicURL bool
+	// mountRepo and mountAt mount a sibling *-interop repo's fixtures into
+	// the container (for images that do not bake them). The adapter is
+	// skipped when the sibling repo is not checked out beside go-otfp.
+	mountRepo, mountAt string
+	// path overrides the HTTP/WebSocket path (OCPP needs a known station id).
+	path string
 }
 
 // adapters are pinned to otfabric interop releases; see each go-<protocol>
@@ -68,13 +75,15 @@ var adapters = []adapter{
 	},
 	{
 		name: "s7-snap7", proto: core.ProtocolS7, port: 102,
-		image: env("OTFP_S7_IMAGE", "ghcr.io/otfabric/snap7-interop-native@sha256:66e3826813005bfacb8510ce5de33119315499325b35bf616dcf61de0506a342"),
-		env:   map[string]string{"SNAP_INTEROP_FIXTURE": "/fixtures/basic-db.compiled.json", "SNAP_INTEROP_LISTEN_ADDRESS": "0.0.0.0", "SNAP_INTEROP_PORT": "102", "SNAP_INTEROP_STATE_PATH": "/tmp/state.json"},
+		image:     env("OTFP_S7_IMAGE", "ghcr.io/otfabric/snap7-interop-native@sha256:66e3826813005bfacb8510ce5de33119315499325b35bf616dcf61de0506a342"),
+		env:       map[string]string{"SNAP_INTEROP_FIXTURE": "/fixtures/basic-db.compiled.json", "SNAP_INTEROP_LISTEN_ADDRESS": "0.0.0.0", "SNAP_INTEROP_PORT": "102", "SNAP_INTEROP_STATE_PATH": "/tmp/state.json"},
+		mountRepo: "snap7-interop/fixtures/compiled", mountAt: "/fixtures",
 	},
 	{
 		name: "opcua-open62541", proto: core.ProtocolOPCUA, port: 4840,
-		image: env("OTFP_OPCUA_IMAGE", "ghcr.io/otfabric/opcua-interop-open62541@sha256:ff00dd63217f42c68e5233563d3d0b75290838f4d01e866fe1f9e1c730adcdbc"),
-		cmd:   []string{"server", "--fixture", "/fixtures/baseline.json", "--bind-address", "0.0.0.0", "--bind-port", "4840"},
+		image:     env("OTFP_OPCUA_IMAGE", "ghcr.io/otfabric/opcua-interop-open62541@sha256:ff00dd63217f42c68e5233563d3d0b75290838f4d01e866fe1f9e1c730adcdbc"),
+		cmd:       []string{"server", "--fixture", "/fixtures/baseline/fixture.json", "--bind-address", "0.0.0.0", "--bind-port", "4840"},
+		mountRepo: "opcua-interop/fixtures", mountAt: "/fixtures",
 	},
 	{
 		name: "enip-opener", proto: core.ProtocolENIP, port: 44818,
@@ -93,6 +102,7 @@ var adapters = []adapter{
 		image:   env("OTFP_OCPP_IMAGE", "ghcr.io/otfabric/ocpp-interop-mobilityhouse@sha256:3f14958e9f21d85d3e18542bcbc9460bc8b7163a2982f4539dc7b8f78eb70fca"),
 		cmd:     []string{"server", "--version", "2.0.1"},
 		variant: "OCPP",
+		path:    "/ocpp/OT-FABRIC-TEST-001", // the fixture's known station
 	},
 	{
 		name: "openadr-openleadr", proto: core.ProtocolOpenADR, port: 8080,
@@ -122,9 +132,18 @@ func TestInterop(t *testing.T) {
 		t.Run(a.name, func(t *testing.T) {
 			t.Parallel()
 			host := startContainer(t, a)
-			target := core.Target{Host: "127.0.0.1", Port: host, Network: network(a), Timeout: 5 * time.Second}
+			target := core.Target{Host: "127.0.0.1", Port: host, Network: network(a), Timeout: 5 * time.Second, Path: a.path}
 
-			report, err := otfp.NewEngine(core.EngineConfig{Mode: core.ModeIdentify, EarlyStop: true, HighConfidenceThreshold: core.ConfidenceHigh, MaxIntrusiveness: core.ReadOnly}).Scan(context.Background(), target)
+			// Validate the adapter's own fingerprinter against its server.
+			// The scan is restricted to that protocol (and the one it
+			// refines) so that the earlier, malformed probes of a full
+			// multi-protocol sweep cannot disturb a single-protocol
+			// reference server before its own probe runs.
+			protocols := []core.Protocol{a.proto}
+			if a.proto == core.ProtocolSunSpec {
+				protocols = append(protocols, core.ProtocolModbus)
+			}
+			report, err := otfp.NewEngine(core.EngineConfig{Mode: core.ModeIdentify, Protocols: protocols, MaxIntrusiveness: core.ReadOnly}).Scan(context.Background(), target)
 			if err != nil {
 				t.Fatalf("scan: %v", err)
 			}
@@ -164,6 +183,14 @@ func startContainer(t *testing.T, a adapter) int {
 	if a.proto == core.ProtocolS7 {
 		args = append(args, "--cap-add", "NET_BIND_SERVICE")
 	}
+	if a.mountRepo != "" {
+		dir := filepath.Join("..", "..", a.mountRepo)
+		if _, err := os.Stat(dir); err != nil {
+			t.Skipf("sibling fixtures %s not found (checkout %s beside go-otfp)", dir, a.mountRepo)
+		}
+		abs, _ := filepath.Abs(dir)
+		args = append(args, "-v", abs+":"+a.mountAt+":ro")
+	}
 	for k, v := range a.env {
 		args = append(args, "-e", k+"="+v)
 	}
@@ -179,10 +206,21 @@ func startContainer(t *testing.T, a adapter) int {
 	id := strings.TrimSpace(string(out))
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", id).Run() })
 
+	// Wait for the container's own readiness signal. Every otfabric interop
+	// image prints a JSON ready event on stdout once its socket is bound
+	// ("ready"/"server_ready"); a published port alone is not enough, since
+	// docker's proxy accepts connections before the server binds.
 	deadline := time.Now().Add(90 * time.Second)
 	for time.Now().Before(deadline) {
-		if a.udp || portOpen(hostPort) {
-			time.Sleep(time.Second) // let the server finish binding
+		logs, _ := exec.Command("docker", "logs", id).CombinedOutput()
+		if strings.Contains(string(logs), `ready"`) {
+			time.Sleep(500 * time.Millisecond)
+			return hostPort
+		}
+		if !a.udp && portOpen(hostPort) {
+			// No recognised ready line, but the port answers: give the app
+			// a moment to finish binding, then proceed.
+			time.Sleep(1500 * time.Millisecond)
 			return hostPort
 		}
 		time.Sleep(500 * time.Millisecond)

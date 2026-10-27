@@ -32,6 +32,7 @@ type detectFlags struct {
 	minGap    time.Duration
 	allProbes bool
 	format    string
+	path      string
 	trace     bool
 	debug     bool
 }
@@ -77,6 +78,7 @@ Exit codes: 0 detected, 1 no match, 2 connection error, 3 bad arguments,
 	fl.DurationVar(&f.minGap, "min-interval", 0, "minimum delay between probes")
 	fl.BoolVar(&f.allProbes, "all", false, "run every applicable probe instead of stopping at the first confident match")
 	fl.StringVar(&f.format, "format", "text", "output format: text, json or table")
+	fl.StringVar(&f.path, "path", "", "HTTP/WebSocket path to try first (OCPP station id, 2030.5/OpenADR base path)")
 	fl.BoolVar(&f.trace, "trace", false, "include raw probe/response bytes (text/json)")
 	fl.BoolVar(&f.debug, "debug", false, "log each probe to stderr")
 	return cmd
@@ -138,6 +140,9 @@ func parseTarget(host string, f detectFlags) (core.Target, error) {
 	}
 	if f.useTLS && t.TLS == nil {
 		t.TLS = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // fingerprinting identifies, it does not trust
+	}
+	if f.path != "" {
+		t.Path = f.path
 	}
 	if t.Port == 0 {
 		return t, fmt.Errorf("no port: give host:port, a scheme, or --port")
