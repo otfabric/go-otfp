@@ -70,19 +70,45 @@ go install github.com/otfabric/go-otfp/cmd/otprobe@latest  # CLI
 
 ## CLI — `otprobe`
 
-```bash
-otprobe detect 10.0.0.5:502                 # scan one TCP port
-otprobe detect 10.0.0.5:502 --identify      # also read device identity
-otprobe detect udp://10.0.0.5:47808         # BACnet / PROFINET (UDP)
-otprobe detect tls://10.0.0.5:802           # Modbus Security (TLS)
-otprobe detect 10.0.0.5:4840 --format json  # machine-readable output
-otprobe detect 10.0.0.5:502 --safe          # OT-safe pacing, passive only
-otprobe list                                # the protocols and their probes
+```console
+$ otprobe detect 127.0.0.1:44818 --identify
+Target:   tcp://127.0.0.1:44818
+Detected: EtherNet/IP, confidence 1.00
+
+  EtherNet/IP  1.00  EtherNet/IP device
+    - ListIdentity: Rockwell Automation/Allen-Bradley, product "OpENer PC"
+    - session registered (handle 0x00000001)
+    vendor       Rockwell Automation/Allen-Bradley
+    vendor id    1
+    product      OpENer PC
+    version      2.3
+    serial       0x075BCD15
+    deviceType   Communications Adapter
+    productCode  65001
+    fingerprint  enip.listidentity:vendor=1;devtype=0x0c;product=65001;rev=2.3;session=ok
+
+  1 probe in 2ms
 ```
 
-Exit codes: `0` detected (high confidence), `1` no match, `2` connection
-error, `3` bad arguments, `4` matched below the high-confidence threshold.
-See `otprobe detect --help` for every flag.
+(Real output from the OpENer reference adapter of `ethernetip-interop`.)
+
+```bash
+otprobe detect 10.0.0.5:502 --identify      # one TCP port, with device identity
+otprobe detect udp://10.0.0.5:47808         # BACnet / PROFINET / EtherNet/IP over UDP
+otprobe detect tls://10.0.0.5:802           # over TLS (Modbus Security, wss://, https://)
+otprobe detect 10.0.0.5 --safe              # sweep the well-known ports, OT-safe pacing
+otprobe detect 10.0.0.5:4840 -o table       # one row per probe; -o json for machines
+otprobe list                                # the protocols and their probes
+otprobe completion zsh > "${fpath[1]}/_otprobe"   # completion of commands, flags and values
+```
+
+Text is the default output; `--format table` and `--format json` (versioned
+schema) are available on every command. Exit codes are stable for scripts:
+`0` detected, `1` no match, `2` usage, `3` invalid input, `4` unreachable,
+`5` timeout, `7` matched below high confidence, `10` interrupted. The full
+reference with real output for every protocol is [docs/cli.md](docs/cli.md);
+see also [docs/exitcodes.md](docs/exitcodes.md) and
+[docs/json-output.md](docs/json-output.md).
 
 ## Library
 
@@ -115,6 +141,27 @@ Detect a single protocol with `engine.Detect(ctx, target, core.ProtocolModbus)`,
 or build a custom registry from `core.NewRegistry()` and your own
 `core.Fingerprinter` implementations. The full API is in [API.md](API.md).
 
+### Examples
+
+Runnable programs in [examples/](examples/); each starts a demo device on
+loopback when run without arguments, so it works offline, and probes a real
+endpoint when given one:
+
+| Example | Shows |
+|---|---|
+| [quickstart](examples/quickstart/main.go) | scan one endpoint with the default engine |
+| [identify](examples/identify/main.go) | detect one protocol and read the device identity |
+| [sweep](examples/sweep/main.go) | several ports with the OT-safe engine |
+| [custom](examples/custom/main.go) | a fingerprinter of your own, next to the built-in ones |
+| [observe](examples/observe/main.go) | progress Observer, slog logging, raw-byte tracing |
+
+```bash
+go run ./examples/identify
+go run ./examples/identify 10.0.0.5:44818 enip
+```
+
+The package documentation on pkg.go.dev carries `Example` functions as well.
+
 ## Project layout
 
 ```
@@ -140,11 +187,30 @@ go-otfp/
 
 ```bash
 make build           # build ./bin/otprobe
-make check           # fmt, lint, vet, govulncheck, race tests, coverage
+make check           # fmt, lint, vet, govulncheck, race tests, coverage, examples
 make test-race       # race tests only
-make fuzz            # fuzz every parser (FUZZTIME=…)
+make stress          # every test 10x with -race in shuffled order (STRESS=…)
+make fuzz            # fuzz every parser and every fingerprinter end to end (FUZZTIME=…)
 make interop         # detect the pinned reference servers (needs Docker)
 ```
+
+Beyond unit tests, the suite hunts for bugs in four ways:
+
+- **End-to-end fuzzing** (`FuzzDetect` in every protocol package): a loopback
+  server answers the fingerprinter's probes with fuzzed bytes, seeded with
+  replies captured from the reference servers, and every result is checked
+  against the Fingerprinter contract — bounded time, no panic, an error only
+  for transport failures, `Matched` consistent with the confidence, valid
+  UTF-8, marshals to JSON. Parsers have their own byte-level fuzz targets.
+- **Hostile servers** (`robustness_test.go`): every fingerprinter against
+  silent, slow-drip (one byte every 20 ms forever), garbage and closing
+  servers must return in bounded time without matching; concurrent use of one
+  instance under `-race`; prompt cancellation; no goroutine leaks.
+- **Cross-protocol matrix** (`crossmatrix_test.go`): every fingerprinter
+  against a minimal correct speaker of every other protocol — each speaker is
+  detected as its own protocol and by no other.
+- **Interop** (`make interop`): detection and identity against the pinned,
+  published reference servers of the `*-interop` suites.
 
 ## Documentation
 

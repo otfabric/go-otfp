@@ -4,170 +4,204 @@ package main
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/json"
-	"net"
-	"strconv"
+	"fmt"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/otfabric/go-otfp/core"
+	"github.com/otfabric/go-otfp/internal/mbap"
+	"github.com/otfabric/go-otfp/internal/testsrv"
+	"github.com/otfabric/go-otfp/protocols/dnp3"
 )
 
-// modbusServer answers FC43 like a Modbus device and returns its address.
-func modbusServer(t *testing.T) (host string, port int) {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func() {
-				defer c.Close()
-				buf := make([]byte, 260)
-				n, err := c.Read(buf)
-				if err != nil {
-					return
-				}
-				req := buf[:n]
-				tid := binary.BigEndian.Uint16(req)
-				// FC43/14 basic: vendor "Acme".
-				pdu := []byte{0x2B, 0x0E, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x04, 'A', 'c', 'm', 'e'}
-				resp := make([]byte, 7+len(pdu))
-				binary.BigEndian.PutUint16(resp, tid)
-				binary.BigEndian.PutUint16(resp[4:], uint16(1+len(pdu)))
-				resp[6] = 1
-				copy(resp[7:], pdu)
-				_, _ = c.Write(resp)
-			}()
+// exec runs the CLI and returns the exit code, stdout and stderr.
+func exec(args ...string) (int, string, string) {
+	var out, errw bytes.Buffer
+	code := run(args, &out, &errw)
+	return code, out.String(), errw.String()
+}
+
+func addr(t core.Target) string { return t.Addr() }
+
+// modbus answers Read Device Identification with vendor "Acme".
+func modbus(t *testing.T) core.Target {
+	return testsrv.TCP(t, func(req []byte) ([]byte, bool) {
+		if len(req) < 10 {
+			return nil, true
 		}
-	}()
-	h, p, _ := net.SplitHostPort(ln.Addr().String())
-	n, _ := strconv.Atoi(p)
-	return h, n
+		tid := uint16(req[0])<<8 | uint16(req[1])
+		return mbap.Request(tid, req[6], 0x2B, 0x0E, req[9], 0x01, 0, 0, 1, 0, 4, 'A', 'c', 'm', 'e'), false
+	})
 }
 
-func TestCLIDetectText(t *testing.T) {
-	host, port := modbusServer(t)
-	var out, errw bytes.Buffer
-	code := run([]string{"detect", host + ":" + strconv.Itoa(port), "--protocol", "modbus", "--identify"}, &out, &errw)
-	if code != exitDetected {
-		t.Fatalf("code %d, stderr %s", code, errw.String())
+func TestExitCodes(t *testing.T) {
+	silent := testsrv.TCP(t, testsrv.Script())
+	closer := testsrv.TCP(t, func([]byte) ([]byte, bool) { return nil, true })
+	// A valid DNP3 frame that is not a link status: matched at medium.
+	dnp := testsrv.TCP(t, testsrv.Script(dnp3.Frame(0x00, 1, 10, nil)))
+
+	cases := []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"detected", []string{"detect", addr(modbus(t)), "--protocol", "modbus"}, exitDetected},
+		{"no match", []string{"detect", addr(closer), "--protocol", "modbus"}, exitNoMatch},
+		{"partial", []string{"detect", addr(dnp), "--protocol", "dnp3", "-t", "300ms"}, exitPartial},
+		{"refused", []string{"detect", addr(testsrv.Closed(t)), "--protocol", "modbus"}, exitTransport},
+		{"timeout", []string{"detect", addr(silent), "--protocol", "modbus", "-t", "200ms"}, exitTimeout},
+		{"unknown flag", []string{"detect", "x:1", "--bogus"}, exitUsage},
+		{"missing target", []string{"detect"}, exitUsage},
+		{"unknown command", []string{"probe"}, exitUsage},
+		{"bad protocol", []string{"detect", "127.0.0.1:1", "--protocol", "nope"}, exitInvalidInput},
+		{"bad format", []string{"detect", "127.0.0.1:1", "--format", "xml"}, exitInvalidInput},
+		{"bad port", []string{"detect", "127.0.0.1:99999"}, exitInvalidInput},
+		{"tls over udp", []string{"detect", "udp://127.0.0.1:47808", "--tls"}, exitInvalidInput},
+		{"port and ports", []string{"detect", "127.0.0.1", "--port", "1", "--ports", "2"}, exitInvalidInput},
+		{"conc without parallel", []string{"detect", "127.0.0.1:1", "--max-concurrency", "2"}, exitInvalidInput},
 	}
-	if !strings.Contains(out.String(), "Modbus TCP") || !strings.Contains(out.String(), "Acme") {
-		t.Fatalf("output:\n%s", out.String())
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if code, out, errw := exec(c.args...); code != c.want {
+				t.Fatalf("exit %d, want %d\nstdout: %s\nstderr: %s", code, c.want, out, errw)
+			}
+		})
 	}
 }
 
-func TestCLIDetectJSON(t *testing.T) {
-	host, port := modbusServer(t)
-	var out, errw bytes.Buffer
-	code := run([]string{"detect", host, "--port", strconv.Itoa(port), "--protocol", "modbus", "--format", "json", "--trace"}, &out, &errw)
+func TestTextOutput(t *testing.T) {
+	code, out, _ := exec("detect", addr(modbus(t)), "--protocol", "modbus", "--identify")
 	if code != exitDetected {
-		t.Fatalf("code %d", code)
+		t.Fatalf("exit %d", code)
 	}
+	for _, want := range []string{"Detected: Modbus TCP, confidence 1.00", "vendor       Acme", "fingerprint  modbus.fc43:", "1 probe in"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+func TestJSONDocument(t *testing.T) {
+	_, out, _ := exec("detect", addr(modbus(t)), "--protocol", "modbus", "-o", "json", "--trace")
 	var doc struct {
-		Best struct {
-			Protocol string `json:"protocol"`
-			Matched  bool   `json:"matched"`
-		} `json:"best"`
-		Results []struct {
-			Exchanges []map[string]string `json:"exchanges"`
-		} `json:"results"`
+		SchemaVersion int `json:"schemaVersion"`
+		Scans         []struct {
+			Port     int `json:"port"`
+			Detected *struct {
+				Protocol string         `json:"protocol"`
+				Identity map[string]any `json:"identity"`
+			} `json:"detected"`
+			Results []struct {
+				Exchanges []map[string]string `json:"exchanges"`
+			} `json:"results"`
+		} `json:"scans"`
 	}
-	if err := json.Unmarshal(out.Bytes(), &doc); err != nil {
-		t.Fatalf("json: %v\n%s", err, out.String())
+	if err := json.Unmarshal([]byte(out), &doc); err != nil {
+		t.Fatalf("%v\n%s", err, out)
 	}
-	if doc.Best.Protocol != "modbus" || !doc.Best.Matched {
-		t.Fatalf("best %+v", doc.Best)
+	if doc.SchemaVersion != 1 || len(doc.Scans) != 1 || doc.Scans[0].Detected == nil || doc.Scans[0].Detected.Protocol != "modbus" {
+		t.Fatalf("%s", out)
 	}
-	if len(doc.Results) == 0 || len(doc.Results[0].Exchanges) == 0 {
-		t.Fatal("no trace in json")
-	}
-}
-
-func TestCLIConnectionError(t *testing.T) {
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	addr := ln.Addr().String()
-	_ = ln.Close()
-	var out, errw bytes.Buffer
-	code := run([]string{"detect", addr, "--protocol", "modbus", "--timeout", "500ms"}, &out, &errw)
-	if code != exitConnError {
-		t.Fatalf("code %d (want %d)", code, exitConnError)
+	if len(doc.Scans[0].Results[0].Exchanges) == 0 {
+		t.Fatal("--trace adds the exchanges")
 	}
 }
 
-func TestCLIBadArgs(t *testing.T) {
-	var out, errw bytes.Buffer
-	if run([]string{"detect", "127.0.0.1"}, &out, &errw) != exitBadParams {
-		t.Fatal("missing port should be bad params")
-	}
-	errw.Reset()
-	if run([]string{"detect", "127.0.0.1:1", "--protocol", "nope"}, &out, &errw) != exitBadParams {
-		t.Fatal("bad protocol should be bad params")
-	}
-}
-
-func TestCLINoMatch(t *testing.T) {
-	ln, _ := net.Listen("tcp", "127.0.0.1:0")
-	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			c, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			_ = c.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
-			_, _ = c.Read(make([]byte, 16))
-			_ = c.Close() // close without answering
+// With --format json even a usage error is one JSON object on stdout, and
+// nothing goes to stderr.
+func TestJSONErrors(t *testing.T) {
+	for args, want := range map[string]string{
+		"detect x:1 --bogus --format json":             "usage",
+		"detect 127.0.0.1:1 --protocol nope -o json":   "invalid_input",
+		"detect 127.0.0.1:1 --format=json --timeout 0": "invalid_input",
+	} {
+		_, out, errw := exec(strings.Fields(args)...)
+		var doc struct {
+			Error struct{ Kind, Code, Message string } `json:"error"`
 		}
-	}()
-	_, port, _ := net.SplitHostPort(ln.Addr().String())
-	var out, errw bytes.Buffer
-	code := run([]string{"detect", "127.0.0.1:" + port, "--protocol", "modbus"}, &out, &errw)
-	if code != exitNoMatch {
-		t.Fatalf("code %d (want %d)", code, exitNoMatch)
+		if err := json.Unmarshal([]byte(out), &doc); err != nil || doc.Error.Kind != want || doc.Error.Message == "" || errw != "" {
+			t.Errorf("%s: stdout %q stderr %q", args, out, errw)
+		}
+	}
+	// The env var selects JSON too.
+	t.Setenv(formatEnv, "json")
+	if _, out, _ := exec("detect", "--nope"); !strings.Contains(out, `"kind": "usage"`) {
+		t.Errorf("env format: %q", out)
 	}
 }
 
-func TestCLIListAndVersion(t *testing.T) {
-	var out, errw bytes.Buffer
-	if run([]string{"list"}, &out, &errw) != 0 || !strings.Contains(out.String(), "modbus") {
-		t.Fatalf("list:\n%s", out.String())
-	}
-	out.Reset()
-	if run([]string{"version"}, &out, &errw) != 0 || !strings.Contains(out.String(), "otprobe") {
-		t.Fatalf("version:\n%s", out.String())
+func TestSweep(t *testing.T) {
+	dev, closed := modbus(t), testsrv.Closed(t)
+	code, out, _ := exec("detect", "127.0.0.1", "--ports", fmt.Sprintf("%d,%d", closed.Port, dev.Port), "--protocol", "modbus")
+	if code != exitDetected || !strings.Contains(out, "Detected: Modbus TCP") || !strings.Contains(out, fmt.Sprintf("Closed:   %d", closed.Port)) {
+		t.Fatalf("exit %d\n%s", code, out)
 	}
 }
 
-func TestParseTarget(t *testing.T) {
-	f := detectFlags{timeout: time.Second}
-	got, err := parseTarget("udp://10.0.0.5:47808", f)
-	if err != nil || got.Network.String() != "udp" || got.Port != 47808 {
-		t.Fatalf("udp: %+v %v", got, err)
+// Completion: flag names and flag values, through cobra's __complete.
+func TestCompletion(t *testing.T) {
+	cases := map[string][]string{
+		"__complete detect 1.2.3.4:5 --protocol mo":     {"modbus\tModbus TCP"},
+		"__complete detect 1.2.3.4:5 --exclude modbus,": {"modbus,s7comm\tSiemens S7comm"},
+		"__complete detect 1.2.3.4:5 --format ":         {"text", "json", "table"},
+		"__complete detect 1.2.3.4:5 --network ":        {"udp\tUDP datagrams"},
+		"__complete detect 1.2.3.4:5 --ports ":          {"502\tmodbus, sunspec"},
+		"__complete detect ":                            {"udp://\t"},
+		"__complete detect 1.2.3.4:5 --ide":             {"--identify"},
+		"__complete completion ":                        {"bash", "zsh", "fish", "powershell"},
+		"__complete ":                                   {"detect", "list", "version", "completion"},
 	}
-	got, err = parseTarget("tls://host:802", f)
-	if err != nil || got.TLS == nil {
-		t.Fatalf("tls: %+v %v", got, err)
+	for line, wants := range cases {
+		args := strings.Split(line, " ")
+		_, out, _ := exec(args...)
+		for _, w := range wants {
+			if !strings.Contains(out, w) {
+				t.Errorf("%q: missing %q in\n%s", line, w, out)
+			}
+		}
 	}
-	got, err = parseTarget("10.0.0.5", detectFlags{port: 502, timeout: time.Second})
-	if err != nil || got.Host != "10.0.0.5" || got.Port != 502 {
-		t.Fatalf("bare + --port: %+v %v", got, err)
+	for _, sh := range []string{"bash", "zsh", "fish", "powershell"} {
+		if code, out, _ := exec("completion", sh); code != 0 || len(out) < 500 {
+			t.Errorf("completion %s: exit %d, %d bytes", sh, code, len(out))
+		}
 	}
-	if _, err := parseTarget("10.0.0.5", f); err == nil {
-		t.Fatal("no port should error")
+}
+
+func TestListAndVersion(t *testing.T) {
+	_, out, _ := exec("list", "--format", "json")
+	var l struct {
+		Protocols []struct{ Protocol, Network string }
 	}
-	if _, err := parseTarget("10.0.0.5:99999", f); err == nil {
-		t.Fatal("bad port should error")
+	if json.Unmarshal([]byte(out), &l) != nil || len(l.Protocols) != len(core.AllProtocols())+1 {
+		t.Fatalf("list json: %s", out)
 	}
-	got, _ = parseTarget("10.0.0.5:502", detectFlags{useTLS: true, timeout: time.Second})
-	if got.TLS == nil {
-		t.Fatal("--tls should set a TLS config")
+	for _, f := range []string{"text", "table"} {
+		if code, out, _ := exec("list", "-o", f); code != 0 || !strings.Contains(out, "sunspec") {
+			t.Errorf("list %s: %d %s", f, code, out)
+		}
+	}
+	_, out, _ = exec("version", "-o", "json")
+	var v map[string]string
+	if json.Unmarshal([]byte(out), &v) != nil || v["version"] == "" || v["go"] == "" {
+		t.Fatalf("version json: %s", out)
+	}
+}
+
+func TestParseTargets(t *testing.T) {
+	f := detectFlags{timeout: core.DefaultTimeout}
+	ts, sweep, err := parseTargets("udp://10.0.0.5:47808", f)
+	if err != nil || sweep || ts[0].Network != core.UDP {
+		t.Fatalf("%v %v %v", ts, sweep, err)
+	}
+	ts, sweep, err = parseTargets("[::1]", f)
+	if err != nil || !sweep || ts[0].Host != "::1" || len(ts) < 10 {
+		t.Fatalf("bare v6 sweeps the well-known ports: %v %v", len(ts), err)
+	}
+	f.protocols = []string{"bacnet"}
+	f.network = "udp"
+	ts, _, _ = parseTargets("10.0.0.5", f)
+	if len(ts) == 0 || ts[0].Port != 47808 {
+		t.Fatalf("bacnet sweep %v", ts)
 	}
 }

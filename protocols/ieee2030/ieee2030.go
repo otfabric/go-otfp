@@ -27,10 +27,11 @@ import (
 	"crypto/x509"
 	"net"
 	"strings"
-	"time"
 
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/fpx"
+	"github.com/otfabric/go-otfp/internal/httpx"
+	"github.com/otfabric/go-otfp/internal/wire"
 )
 
 const proto = core.ProtocolIEEE2030_5
@@ -117,20 +118,21 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 
 	// When the handshake completed (an anonymous or misconfigured server),
 	// read /dcap for the conclusive DeviceCapability document.
+	var trace []core.Exchange
 	if hsErr == nil {
-		req := "GET /dcap HTTP/1.1\r\nHost: " + target.Host + "\r\nAccept: application/sep+xml\r\nConnection: close\r\n\r\n"
-		_ = tc.SetDeadline(time.Now().Add(target.EffectiveTimeout()))
-		if _, err := tc.Write([]byte(req)); err == nil {
-			buf := make([]byte, 8192)
-			n, _ := tc.Read(buf)
-			body := string(buf[:n])
+		// Over the established TLS connection: framed HTTP read, traced.
+		ss := wire.Wrap(ctx, proto, target, tc, opts)
+		resp, err := httpx.Request(ss, "dcap", "GET", target.Host, "/dcap", map[string]string{"Accept": "application/sep+xml"}, 8192)
+		trace = ss.Exchanges()
+		if err == nil {
+			body := string(resp.Body)
 			switch {
 			case strings.Contains(body, namespace) || strings.Contains(body, "DeviceCapability"):
 				b.Score(core.ConfidenceCertain, "GET /dcap returned an IEEE 2030.5 DeviceCapability")
 				b.Variant("IEEE 2030.5")
 				b.Sig("dcap", "ok")
 				parseDcap(b, body)
-			case strings.HasPrefix(body, "HTTP/1.1 403") && certRequested:
+			case resp.Status == 403 && certRequested:
 				b.Score(core.ConfidenceHigh, "server answers 403 without a client certificate (IEEE 2030.5 access control)")
 				b.Sig("dcap", "403")
 			}
@@ -139,13 +141,13 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 
 	_ = tc.Close()
 	if b.Confidence() < core.MatchThreshold {
-		return b.Result("ieee2030.tls", "not IEEE 2030.5", nil), nil
+		return b.Result("ieee2030.tls", "not IEEE 2030.5", nil).WithExchanges(trace), nil
 	}
 	details := "IEEE 2030.5 server"
 	if !b.VariantSet() {
 		details = "probable IEEE 2030.5 server (TLS only)"
 	}
-	return b.Result("ieee2030.tls", details, nil), nil
+	return b.Result("ieee2030.tls", details, nil).WithExchanges(trace), nil
 }
 
 func parseDcap(b *fpx.Builder, body string) {

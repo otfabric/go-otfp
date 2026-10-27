@@ -5,8 +5,10 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -19,58 +21,83 @@ var (
 	buildDate = "unknown"
 )
 
-// Exit codes.
-const (
-	exitDetected  = 0 // a protocol was identified at high confidence
-	exitNoMatch   = 1 // nothing matched
-	exitConnError = 2 // the target could not be reached
-	exitBadParams = 3 // invalid arguments
-	exitPartial   = 4 // matched, but below the high-confidence threshold
-)
+// formatEnv sets the default --format of every command that has one.
+const formatEnv = "OTPROBE_OUTPUT_FORMAT"
 
 func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
 
-func run(args []string, stdout, stderr io.Writer) (code int) {
+// run executes the command line and returns the process exit code.
+func run(args []string, stdout, stderr io.Writer) int {
 	root := &cobra.Command{
-		Use:           "otprobe",
-		Short:         "OT protocol fingerprinting",
-		Long:          "otprobe detects industrial protocols on a network endpoint with safe, connection-level probes.",
+		Use:   "otprobe",
+		Short: "Fingerprint OT protocols on a network endpoint",
+		Long: `otprobe identifies which industrial protocol an endpoint speaks — Modbus,
+SunSpec, IEC 61850 MMS, S7comm, OPC UA, EtherNet/IP, BACnet/IP, PROFINET,
+DNP3, IEC 60870-5-104, OCPP, IEEE 2030.5, OpenADR or an SLCAN CAN gateway —
+with each protocol's standard handshake or one harmless request. With
+--identify it also reads the device's identity over the protocol's own
+read-only service. It never writes, controls or reconfigures a device.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
 	root.SetArgs(args)
 	root.SetOut(stdout)
 	root.SetErr(stderr)
-	root.AddCommand(detectCommand(stdout, stderr, &code), listCommand(stdout), versionCommand(stdout))
+	root.SetFlagErrorFunc(func(_ *cobra.Command, err error) error {
+		return fail(kindUsage, codeInvalidInput, "%v", err)
+	})
+	root.AddCommand(detectCommand(stdout, stderr), listCommand(stdout), versionCommand(stdout), completionCommand(root, stdout))
+	root.CompletionOptions.DisableDefaultCmd = true // replaced by completionCommand
 
-	if err := root.Execute(); err != nil {
-		var se *silentExit
-		if as(err, &se) {
-			return se.code
-		}
-		return exitBadParams
+	err := root.Execute()
+	if err == nil {
+		return exitDetected
 	}
-	return code
+	var st *exitStatus
+	if errors.As(err, &st) {
+		return st.code
+	}
+	return render(err, wantsJSON(args), stdout, stderr)
 }
 
-// silentExit carries an exit code out of a command without cobra printing
-// it as an error.
-type silentExit struct{ code int }
-
-func (e *silentExit) Error() string { return "" }
-
-func as(err error, target **silentExit) bool {
-	for err != nil {
-		if se, ok := err.(*silentExit); ok {
-			*target = se
-			return true
+// wantsJSON reports whether the command line asks for JSON output, read
+// directly from the arguments so that even a command line that does not
+// parse renders its usage error in the requested format.
+func wantsJSON(args []string) bool {
+	format := os.Getenv(formatEnv)
+	for i, a := range args {
+		switch {
+		case a == "--":
+			return format == "json"
+		case (a == "--format" || a == "-o") && i+1 < len(args):
+			format = args[i+1]
+		case strings.HasPrefix(a, "--format="):
+			format = strings.TrimPrefix(a, "--format=")
+		case strings.HasPrefix(a, "-o="):
+			format = strings.TrimPrefix(a, "-o=")
+		case strings.HasPrefix(a, "-o") && !strings.HasPrefix(a, "--"):
+			format = strings.TrimPrefix(a, "-o")
 		}
-		type unwrapper interface{ Unwrap() error }
-		u, ok := err.(unwrapper)
-		if !ok {
-			return false
-		}
-		err = u.Unwrap()
 	}
-	return false
+	return format == "json"
+}
+
+// formatFlag adds --format with the given choices, defaulting to text (or
+// OTPROBE_OUTPUT_FORMAT), with shell completion of the values.
+func formatFlag(cmd *cobra.Command, dst *string, choices ...string) {
+	def := "text"
+	if v := os.Getenv(formatEnv); v != "" {
+		def = v
+	}
+	cmd.Flags().StringVarP(dst, "format", "o", def, "output format: "+strings.Join(choices, ", ")+" (env "+formatEnv+")")
+	_ = cmd.RegisterFlagCompletionFunc("format", fixedCompletion(choices...))
+}
+
+func checkFormat(format string, choices ...string) error {
+	for _, c := range choices {
+		if format == c {
+			return nil
+		}
+	}
+	return fail(kindInvalidInput, codeInvalidFormat, "unknown --format %q (want %s)", format, strings.Join(choices, ", "))
 }

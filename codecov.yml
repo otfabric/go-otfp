@@ -14,4 +14,6 @@ ignore:
   - "cmd/**"
   - "internal/cmd/**"
   - "internal/testsrv/**"
+  - "internal/fuzzkit/**"
+  - "examples/**"
   - "interop/**"

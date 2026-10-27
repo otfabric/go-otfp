@@ -165,3 +165,19 @@ func FuzzParse(f *testing.F) {
 		_ = Framer(b)
 	})
 }
+
+// A reply that starts with the DNP3 start octets but is malformed (another
+// protocol whose bytes happen to begin 05 64) ends the read at once instead
+// of waiting for more frames until the timeout.
+func TestMalformedFrameStopsReading(t *testing.T) {
+	target := testsrv.TCP(t, testsrv.Script([]byte{0x05, 0x64, 0x00, 0x00, 0x00, 0x0a, 0x01, 0x2b, 0x0e, 0x01, 0x82}))
+	target.Timeout = 3 * time.Second
+	start := time.Now()
+	r, err := New().Detect(context.Background(), target, core.Options{})
+	if err != nil || r.Matched {
+		t.Fatalf("%v %v", r, err)
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Fatalf("took %v", d)
+	}
+}

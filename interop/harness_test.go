@@ -83,6 +83,7 @@ var adapters = []adapter{
 		name: "opcua-open62541", proto: core.ProtocolOPCUA, port: 4840,
 		image:     env("OTFP_OPCUA_IMAGE", "ghcr.io/otfabric/opcua-interop-open62541@sha256:ff00dd63217f42c68e5233563d3d0b75290838f4d01e866fe1f9e1c730adcdbc"),
 		cmd:       []string{"server", "--fixture", "/fixtures/baseline/fixture.json", "--bind-address", "0.0.0.0", "--bind-port", "4840"},
+		identity:  "OTFabric OPC UA Compatibility Server", // GetEndpoints decoded
 		mountRepo: "opcua-interop/fixtures", mountAt: "/fixtures",
 	},
 	{

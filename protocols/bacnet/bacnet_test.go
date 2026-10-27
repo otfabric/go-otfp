@@ -34,8 +34,8 @@ var frames = map[string]string{
 
 func device() testsrv.Handler {
 	return func(req []byte) ([]byte, bool) {
-		if r, ok := frames[hex.EncodeToString(req)]; ok {
-			return unhex(r), false
+		if r, ok := frames[stripInvoke(req)]; ok {
+			return withInvoke(unhex(r), req), false
 		}
 		return nil, false
 	}
@@ -133,4 +133,60 @@ func FuzzParse(f *testing.F) {
 			_, _, _ = parseIAm(a.apdu)
 		}
 	})
+}
+
+// A device (or a network that duplicates datagrams) that first replays the
+// answer to the previous read must not shift every property by one: each
+// answer is matched to its request by invoke ID and property.
+func TestIdentifyIgnoresStaleAnswers(t *testing.T) {
+	var prev []byte
+	target := testsrv.UDP(t, func(req []byte) ([]byte, bool) {
+		r, ok := frames[stripInvoke(req)]
+		if !ok {
+			return nil, false
+		}
+		ans := withInvoke(unhex(r), req)
+		out := ans
+		if prev != nil {
+			// The stale answer goes out first, as a separate datagram
+			// would; testsrv sends one datagram, so emulate by answering
+			// with the stale one and queueing the right one for the
+			// retransmission.
+			out = prev
+		}
+		prev = ans
+		return out, false
+	})
+	target.Timeout = 400 * time.Millisecond
+	r, err := New().Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify})
+	if err != nil || !r.Matched {
+		t.Fatalf("%v %v", r, err)
+	}
+	id := r.Identity
+	// Every property either has its own value or is missing; none may hold
+	// another property's value.
+	if id.Vendor == "InteropDevice" || id.Name == "BACnet Stack at SourceForge" || id.Model == "1.6.1" || id.Version == "GNU" {
+		t.Fatalf("properties shifted by a stale answer: %+v", id)
+	}
+}
+
+// stripInvoke normalises the invoke ID of a ReadProperty request so that
+// the captured frames (recorded with invoke IDs 1 and 2) still match.
+func stripInvoke(req []byte) string {
+	b := append([]byte(nil), req...)
+	if len(b) > 8 && b[6] == apduConfirmedReq {
+		if b[8] > 1 {
+			b[8] = 2
+		}
+	}
+	return hex.EncodeToString(b)
+}
+
+// withInvoke sets the invoke ID of a ComplexACK answer to the request's.
+func withInvoke(ans, req []byte) []byte {
+	b := append([]byte(nil), ans...)
+	if len(b) > 7 && len(req) > 8 {
+		b[7] = req[8]
+	}
+	return b
 }

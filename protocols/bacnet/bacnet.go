@@ -91,7 +91,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	defer s.Close() //nolint:errcheck
 
 	instance := uint32(wildcardInstance)
-	resp, err := s.RoundTrip("read-object-id", readProperty(1, wildcardInstance, propObjectIdentifier), nil, maxUDP)
+	resp, err := s.RoundTripUDP("read-object-id", readProperty(1, wildcardInstance, propObjectIdentifier), maxUDP, answers(1))
 	if err == nil {
 		if a, ok := f.judge(b, resp); ok {
 			if a.kind == apduComplexACK {
@@ -105,7 +105,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	}
 	// Fall back to a Who-Is when the wildcard read drew nothing.
 	if b.Confidence() < core.MatchThreshold {
-		resp, err = s.RoundTrip("who-is", whoIs(), nil, maxUDP)
+		resp, err = s.RoundTripUDP("who-is", whoIs(), maxUDP, answersWhoIs)
 		if err == nil {
 			if a, ok := f.judge(b, resp); ok && a.kind == apduUnconfirmedReq {
 				if inst, vendor, ok2 := parseIAm(a.apdu); ok2 {
@@ -173,16 +173,21 @@ func (f *Fingerprinter) judge(b *fpx.Builder, dg []byte) (apdu, bool) {
 
 func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, s *wire.Session, instance uint32) {
 	id := b.Identity()
+	invoke := byte(1)
 	read := func(label string, prop uint32) (byte, []byte, bool) {
 		if ctx.Err() != nil {
 			return 0, nil, false
 		}
-		resp, err := s.RoundTrip(label, readProperty(2, instance, prop), nil, maxUDP)
+		// A distinct invoke ID per request, and an answer accepted only
+		// for it and for the property asked: a late or duplicated answer
+		// to an earlier read must not be taken for this one.
+		invoke++
+		resp, err := s.RoundTripUDP(label, readProperty(invoke, instance, prop), maxUDP, answers(invoke))
 		if err != nil {
 			return 0, nil, false
 		}
 		a, err := parse(resp)
-		if err != nil || a.kind != apduComplexACK {
+		if err != nil || a.kind != apduComplexACK || a.invoke != invoke || propertyOf(a) != prop {
 			return 0, nil, false
 		}
 		return readPropertyValue(a)
@@ -208,6 +213,48 @@ func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, s *wire.Se
 	if !id.IsZero() {
 		b.Evidence("device identity properties read")
 	}
+}
+
+// answers returns a datagram filter for a confirmed request with the given
+// invoke ID: BACnet replies to other invoke IDs (late or duplicate answers
+// to earlier requests) and unsolicited I-Ams are discarded; anything that
+// is not a BACnet reply is kept, for the caller to judge.
+func answers(invoke byte) func([]byte) bool {
+	return func(dg []byte) bool {
+		a, err := parse(dg)
+		if err != nil || a.isResult {
+			return true
+		}
+		switch a.kind {
+		case apduComplexACK, apduSimpleACK, apduError, apduReject, apduAbort:
+			return a.invoke == invoke
+		}
+		return false
+	}
+}
+
+// answersWhoIs keeps I-Am replies (and anything that is not BACnet) and
+// discards confirmed-service answers, which belong to earlier requests.
+func answersWhoIs(dg []byte) bool {
+	a, err := parse(dg)
+	if err != nil || a.isResult {
+		return true
+	}
+	return a.kind == apduUnconfirmedReq && a.service == 0x00
+}
+
+// propertyOf returns the property identifier echoed in a ReadProperty
+// ComplexACK (context tag 1), or 0xFFFFFFFF.
+func propertyOf(a apdu) uint32 {
+	_, val, _, ok := firstContextTag(a.body, 1)
+	if !ok || len(val) == 0 || len(val) > 4 {
+		return 0xFFFFFFFF
+	}
+	var v uint32
+	for _, c := range val {
+		v = v<<8 | uint32(c)
+	}
+	return v
 }
 
 // ---- encoders ----

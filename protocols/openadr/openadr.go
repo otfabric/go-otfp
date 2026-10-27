@@ -14,6 +14,9 @@
 // oadrQueryRegistration to the 2.0b registration endpoint and recognising
 // the oadrCreatedPartyRegistration response and the OpenADR XML namespace.
 //
+// The OpenADR 3 probes are unauthenticated GETs, so the fingerprinter is
+// passive; the 2.0b POST is sent only when the scan allows read-only probes.
+//
 // Run the fingerprinter over a TLS target for an https:// VTN.
 package openadr
 
@@ -52,8 +55,8 @@ func (f *Fingerprinter) Info() core.Info {
 		Network:       core.TCP,
 		Ports:         []int{8080, 443, 8443},
 		Priority:      130,
-		Intrusiveness: core.ReadOnly,
-		Description:   "GET /auth/server and /programs (OpenADR 3); POST oadrQueryRegistration (OpenADR 2.0b)",
+		Intrusiveness: core.Passive,
+		Description:   "GET /auth/server and /programs (OpenADR 3); POST oadrQueryRegistration (OpenADR 2.0b) when read-only probes are allowed",
 	}
 }
 

@@ -80,10 +80,10 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 
 	vResp, err := s.RoundTrip("slcan-version", probeVersion, lineFramer, maxResp)
 	if err != nil {
-		if b.Confidence() == 0 {
+		if wire.IsTransport(err) {
 			return b.Result("can.slcan", "no response", s), err
 		}
-		return b.Result("can.slcan", "no SLCAN response", s), nil
+		return b.Result("can.slcan", "no SLCAN response", s), nil // closed: not SLCAN
 	}
 	if looksLikeText(vResp) {
 		b.Evidence("response looks like a text banner, not SLCAN")
