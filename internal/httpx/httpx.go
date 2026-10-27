@@ -12,7 +12,6 @@ import (
 	"bytes"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 
@@ -166,6 +165,3 @@ func chunkedEnd(b []byte, off int) int {
 		off += int(size) + 2
 	}
 }
-
-// PathEscape escapes a path segment.
-func PathEscape(s string) string { return url.PathEscape(s) }

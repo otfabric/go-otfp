@@ -242,3 +242,94 @@ func TestIdleGapAfterPartialFrame(t *testing.T) {
 		t.Fatalf("partial frame took %v; the idle gap is %v", d, max(250*time.Millisecond, target.Timeout/4))
 	}
 }
+
+func TestIsTransport(t *testing.T) {
+	for _, err := range []error{&core.TimeoutError{}, &core.ConnectionError{}, &core.DetectError{}} {
+		if !wire.IsTransport(err) {
+			t.Errorf("%T", err)
+		}
+	}
+	if wire.IsTransport(wire.ErrClosed) || wire.IsTransport(errors.New("parse")) || wire.IsTransport(nil) {
+		t.Fatal("non-transport errors")
+	}
+}
+
+func TestFixedHeaderFramer(t *testing.T) {
+	f := wire.FixedHeader(4, func(h []byte) int { return int(h[3]) })
+	if f([]byte{1, 2}) != 0 || f([]byte{0, 0, 0, 2}) != -1 || f([]byte{0, 0, 0, 9}) != 9 {
+		t.Fatal("FixedHeader")
+	}
+}
+
+// A frame larger than max returns what fits; with no framer, the first
+// chunk; with a framer that rejects, what was read.
+func TestReadLimits(t *testing.T) {
+	target := testsrv.TCP(t, testsrv.Script([]byte("0123456789")))
+	s := dial(t, target, core.Options{})
+	defer s.Close()
+	if resp, err := s.RoundTrip("x", []byte("q"), func([]byte) int { return 0 }, 4); err != nil || string(resp) != "0123" {
+		t.Fatalf("max: %q %v", resp, err)
+	}
+	if resp, err := s.Read(nil, 64); err != nil || string(resp) != "456789" {
+		t.Fatalf("no framer: %q %v", resp, err)
+	}
+	target = testsrv.TCP(t, testsrv.Script([]byte("xyz")))
+	s2 := dial(t, target, core.Options{})
+	defer s2.Close()
+	if resp, err := s2.RoundTrip("x", []byte("q"), func([]byte) int { return -1 }, 64); err != nil || string(resp) != "xyz" {
+		t.Fatalf("reject: %q %v", resp, err)
+	}
+}
+
+// Writes and reads on a closed connection are DetectErrors; reads after the
+// peer reset with nothing received are ErrClosed.
+func TestIOAfterClose(t *testing.T) {
+	target := testsrv.TCP(t, testsrv.Script())
+	s := dial(t, target, core.Options{})
+	_ = s.Conn().Close()
+	var de *core.DetectError
+	if err := s.Send([]byte("x")); !errors.As(err, &de) {
+		t.Fatalf("send on closed: %v", err)
+	}
+	if _, err := s.Read(lenFramer, 8); !errors.As(err, &de) {
+		t.Fatalf("read on closed: %v", err)
+	}
+	u := testsrv.UDP(t, testsrv.Script())
+	su := dial(t, u, core.Options{})
+	_ = su.Conn().Close()
+	if _, err := su.RoundTrip("x", []byte("q"), nil, 8); !errors.As(err, &de) {
+		t.Fatalf("udp send on closed: %v", err)
+	}
+	if _, err := su.RoundTripUDP("x", []byte("q"), 8, nil); err == nil {
+		t.Fatal("udp on closed")
+	}
+}
+
+// UDP to a port where nothing listens: ICMP port unreachable surfaces as a
+// refused ConnectionError on the connected socket's read.
+func TestUDPPortUnreachable(t *testing.T) {
+	pc, _ := net.ListenPacket("udp", "127.0.0.1:0")
+	_, port, _ := net.SplitHostPort(pc.LocalAddr().String())
+	_ = pc.Close()
+	target := core.Target{Host: "127.0.0.1", Port: atoi(port), Network: core.UDP, Timeout: 500 * time.Millisecond}
+	s := dial(t, target, core.Options{})
+	defer s.Close()
+	_, err := s.RoundTrip("x", []byte("q"), nil, 8)
+	if !wire.IsTransport(err) {
+		t.Fatalf("want a transport error, got %v", err)
+	}
+}
+
+// The context deadline also caps a ReadUntil window.
+func TestReadUntilCappedByContext(t *testing.T) {
+	target := testsrv.TCP(t, testsrv.Script())
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	s, _ := wire.Dial(ctx, core.ProtocolModbus, target, core.Options{})
+	defer s.Close()
+	start := time.Now()
+	_, _ = s.ReadUntil(lenFramer, 8, time.Now().Add(time.Hour))
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("took %v", time.Since(start))
+	}
+}

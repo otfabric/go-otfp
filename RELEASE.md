@@ -1,10 +1,11 @@
 # go-otfp Releases
 
-> **Stability:** `v0.0.x` is pre-1.0. Public APIs may change between tags; pin
-> versions and read these notes before upgrading.
+> **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
+> tags; pin versions and read these notes before upgrading.
 
-## v0.1.0 (pending release)
+## v0.1.0
 
+**Date:** 2026-10-27
 **Previous release:** v0.0.3
 
 ### Summary
@@ -50,9 +51,11 @@ the public API changed substantially — review before upgrading.
   (`FuzzDetect`, checking the Fingerprinter contract on every result),
   hostile-server tests (silent, slow-drip, garbage, closing), concurrent use
   of one instance under `-race`, prompt-cancellation and goroutine-leak
-  checks, a cross-protocol false-positive matrix, and `make stress`.
-- **Interop suite** (`interop/`, build tag `interop`): detection checked
-  against the pinned, published reference servers of the `*-interop` suites.
+  checks, a cross-protocol false-positive matrix, and `make stress`. Library
+  coverage is 98% (every package ≥ 92%), and `make coverage` fails below 90%.
+- **Interop suite** (`interop/`, build tag `interop`): detection and identity
+  checked against 11 pinned, published reference servers of the `*-interop`
+  suites, including both IEEE 2030.5 servers (GridAPPS-D, Envoy).
 - **Generated CIP catalogue:** EtherNet/IP vendor and device-type names are
   generated from `go-ethernetip` (`internal/cmd/gencip`), keeping the library
   dependency-free.
@@ -92,11 +95,21 @@ the public API changed substantially — review before upgrading.
   passive GETs; it is passive now, with the 2.0b POST gated on read-only.
 - **CLI:** `otprobe detect <host>` without a port, documented as a sweep,
   failed; `-o json` usage errors were rendered as text.
+- **IEEE 2030.5:** a server offering only CCM_8 (GridAPPS-D) was never
+  recognised: the probe matched an error text that only a Go *server*
+  produces. The fingerprinter now sends its own TLS 1.2 ClientHello and
+  reads the server's flight (chosen suite, certificate, certificate
+  request), and detects GridAPPS-D and Envoy.
+- **BACnet:** SimpleACK replies lost their invoke ID and were discarded.
+- **S7comm:** when every TSAP attempt was closed by the peer, the probe went
+  on with the last, closed session and reported a false ISO-on-TCP hint.
 
 ### Removed
 
 - The vendored Wireshark dissector sources (`wireshark/`, GPL-licensed) are no
   longer part of the module; the protocol references live in `FINGERPRINTS.md`.
+
+---
 
 ## v0.0.3
 

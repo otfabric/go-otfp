@@ -68,3 +68,24 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+func TestNamesAndChecks(t *testing.T) {
+	for code := byte(1); code <= 0x0B; code++ {
+		if ExceptionName(code) == "" {
+			t.Errorf("code %d", code)
+		}
+	}
+	r, _ := Parse(Request(7, 1, 0x03, 2, 0, 1))
+	if r.Check(8, 0x03) == nil || r.Check(7, 0x04) == nil {
+		t.Fatal("TID and function mismatches")
+	}
+	if _, err := Parse(Request(7, 1, 0x83, 1, 2)); err == nil {
+		t.Fatal("exception with two data bytes")
+	}
+	if Framer([]byte{0, 0, 0, 0, 0x01, 0x10, 1}) != -1 {
+		t.Fatal("length beyond the largest ADU")
+	}
+	if _, err := Registers([]byte{4, 0, 1}, 2); err == nil {
+		t.Fatal("short register payload")
+	}
+}

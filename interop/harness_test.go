@@ -52,6 +52,9 @@ type adapter struct {
 	mountRepo, mountAt string
 	// path overrides the HTTP/WebSocket path (OCPP needs a known station id).
 	path string
+	// pki, when set, generates the IEEE 2030.5 throwaway PKI with the
+	// sibling ieee20305-interop's helper and mounts it at /tls.
+	pki bool
 }
 
 // adapters are pinned to otfabric interop releases; see each go-<protocol>
@@ -104,6 +107,20 @@ var adapters = []adapter{
 		cmd:     []string{"server", "--version", "2.0.1"},
 		variant: "OCPP",
 		path:    "/ocpp/OT-FABRIC-TEST-001", // the fixture's known station
+	},
+	{
+		// GridAPPS-D offers only CCM_8, which no Go TLS client can use: the
+		// raw-hello probe still recognises it.
+		name: "ieee2030-gridappsd", proto: core.ProtocolIEEE2030_5, port: 443, pki: true,
+		image:    env("OTFP_IEEE2030_GRIDAPPSD_IMAGE", "ghcr.io/otfabric/ieee20305-interop-gridappsd@sha256:7b04e6c482df6536d15ba06e17e4c317a68031cabeed54cc03bc5b395f5b8d68"),
+		cmd:      []string{"server", "--version", "2018", "--tls-dir", "/tls/server"},
+		identity: "CN=gridappsd-server",
+	},
+	{
+		name: "ieee2030-envoy", proto: core.ProtocolIEEE2030_5, port: 443, pki: true,
+		image:    env("OTFP_IEEE2030_ENVOY_IMAGE", "ghcr.io/otfabric/ieee20305-interop-envoy@sha256:2dd3587071de81d7b96a7dbf65bf414a06a643a32f5d785b42ba7ebb0cb04d2d"),
+		cmd:      []string{"server", "--version", "2018", "--tls-dir", "/tls/server"},
+		identity: "CN=",
 	},
 	{
 		name: "openadr-openleadr", proto: core.ProtocolOpenADR, port: 8080,
@@ -192,6 +209,9 @@ func startContainer(t *testing.T, a adapter) int {
 		abs, _ := filepath.Abs(dir)
 		args = append(args, "-v", abs+":"+a.mountAt+":ro")
 	}
+	if a.pki {
+		args = append(args, "-v", makePKI(t)+":/tls:ro")
+	}
 	for k, v := range a.env {
 		args = append(args, "-e", k+"="+v)
 	}
@@ -211,17 +231,18 @@ func startContainer(t *testing.T, a adapter) int {
 	// image prints a JSON ready event on stdout once its socket is bound
 	// ("ready"/"server_ready"); a published port alone is not enough, since
 	// docker's proxy accepts connections before the server binds.
-	deadline := time.Now().Add(90 * time.Second)
+	started := time.Now()
+	deadline := started.Add(90 * time.Second)
 	for time.Now().Before(deadline) {
 		logs, _ := exec.Command("docker", "logs", id).CombinedOutput()
 		if strings.Contains(string(logs), `ready"`) {
 			time.Sleep(500 * time.Millisecond)
 			return hostPort
 		}
-		if !a.udp && portOpen(hostPort) {
-			// No recognised ready line, but the port answers: give the app
-			// a moment to finish binding, then proceed.
-			time.Sleep(1500 * time.Millisecond)
+		if !a.udp && time.Since(started) > 30*time.Second && portOpen(hostPort) {
+			// No ready line after a long wait, but the port answers: an
+			// image without the readiness contract. (Before that, an open
+			// port proves nothing: docker's proxy accepts at once.)
 			return hostPort
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -250,4 +271,22 @@ func portOpen(port int) bool {
 	}
 	_ = c.Close()
 	return true
+}
+
+// makePKI writes the IEEE 2030.5 throwaway PKI with ieee20305-interop's own
+// helper (scripts/lib.sh make_pki), and skips when that repository is not
+// checked out beside go-otfp.
+func makePKI(t *testing.T) string {
+	t.Helper()
+	repo, _ := filepath.Abs(filepath.Join("..", "..", "ieee20305-interop"))
+	if _, err := os.Stat(filepath.Join(repo, "scripts", "lib.sh")); err != nil {
+		t.Skipf("ieee20305-interop not checked out beside go-otfp: %v", err)
+	}
+	dir := filepath.Join(t.TempDir(), "tls")
+	cmd := exec.Command("bash", "-c", `source scripts/lib.sh && make_pki "$0" "$(jq -r .device.serial fixtures/baseline/fixture.json)" gridappsd-server envoy-server localhost 127.0.0.1 -- localhost`, dir)
+	cmd.Dir = repo
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("make_pki (needs bash, jq, openssl): %v\n%s", err, out)
+	}
+	return dir
 }

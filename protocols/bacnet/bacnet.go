@@ -385,6 +385,11 @@ func parseAPDU(p []byte) (apdu, error) {
 		}
 		a.invoke = p[1]
 	case apduSimpleACK:
+		// type(1) invoke(1) service(1).
+		if len(p) < 3 {
+			return a, fmt.Errorf("short SimpleACK")
+		}
+		a.invoke, a.service = p[1], p[2]
 	default:
 		return a, fmt.Errorf("APDU type 0x%02x is not a reply", a.kind)
 	}
@@ -518,9 +523,6 @@ func charString(v []byte) string {
 	// v is the value bytes of an application tag 7; the first octet is the
 	// character set.
 	if len(v) < 2 {
-		if len(v) == 1 {
-			return ""
-		}
 		return ""
 	}
 	return string(v[1:])
