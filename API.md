@@ -199,9 +199,11 @@ pkg.go.dev and [FINGERPRINTS.md](FINGERPRINTS.md).
 
 ## CLI — `otprobe`
 
-`otprobe detect <host>` with `--port`, `--network`, `--tls`, `--timeout`,
-`--deadline`, `--protocol`, `--exclude`, `--identify`, `--safe`,
-`--parallel`, `--max-concurrency`, `--min-interval`, `--all`, `--format`
-(`text|json|table`), `--trace`, `--debug`; plus `otprobe list` and `otprobe
-version`. Exit codes: 0 detected, 1 no match, 2 connection error, 3 bad
-arguments, 4 partial. See the README for examples.
+`otprobe detect <target>` (a `host:port`, a `tcp://`/`udp://`/`tls://` URL, or
+a bare host to sweep its well-known ports), `otprobe list`, `otprobe version`
+and `otprobe completion bash|zsh|fish|powershell`. Text is the default output;
+`-o table` and `-o json` are available on every command. Exit codes: 0
+detected, 1 no match, 2 usage, 3 invalid input, 4 unreachable, 5 timeout, 7
+partial, 10 interrupted or internal. See [docs/cli.md](docs/cli.md),
+[docs/exitcodes.md](docs/exitcodes.md) and
+[docs/json-output.md](docs/json-output.md).

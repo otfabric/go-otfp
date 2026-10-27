@@ -32,9 +32,25 @@ the public API changed substantially — review before upgrading.
   early-stops on a confident match (while still running refinements such as
   SunSpec over Modbus), stops a TCP scan on a refused port, and supports
   parallel scanning, pacing and a conservative `SafeEngineConfig`.
-- **`otprobe` rewrite:** `detect <host>` with schemes, `--identify`, `--safe`,
-  `--protocol`/`--exclude`, `--format text|json|table`, `--trace`, `--debug`;
-  plus `list` and `version`.
+- **`otprobe` rewrite:** `detect <target>` with schemes, a sweep of the
+  well-known ports for a bare host (`--ports` for a list), `--identify`,
+  `--safe`, `--protocol`/`--exclude`, `--path`, `--trace`, `--debug`; `list`,
+  `version` and `completion bash|zsh|fish|powershell` (commands, flags and
+  flag values: protocols, formats, networks, ports, schemes). Text output by
+  default; `--format table|json` on every command, with a versioned JSON
+  schema ([docs/json-output.md](docs/json-output.md)) and fatal errors as one
+  JSON object. Exit codes follow the OT Fabric CLI convention: 0 detected, 1
+  no match, 2 usage, 3 invalid input, 4 unreachable, 5 timeout, 7 partial, 10
+  interrupted ([docs/exitcodes.md](docs/exitcodes.md)).
+- **Examples:** runnable programs in `examples/` (quickstart, identify,
+  sweep, custom fingerprinter, observability) that work offline against a
+  demo device, `Example` functions for pkg.go.dev, and a CLI reference with
+  real output for every protocol ([docs/cli.md](docs/cli.md)).
+- **Bug-hunting test suite:** end-to-end fuzzing of every fingerprinter
+  (`FuzzDetect`, checking the Fingerprinter contract on every result),
+  hostile-server tests (silent, slow-drip, garbage, closing), concurrent use
+  of one instance under `-race`, prompt-cancellation and goroutine-leak
+  checks, a cross-protocol false-positive matrix, and `make stress`.
 - **Interop suite** (`interop/`, build tag `interop`): detection checked
   against the pinned, published reference servers of the `*-interop` suites.
 - **Generated CIP catalogue:** EtherNet/IP vendor and device-type names are
@@ -49,6 +65,33 @@ the public API changed substantially — review before upgrading.
   numeric values are stable and append-only.
 - Fingerprinters now declare themselves with `core.Info` (transport, ports,
   priority, intrusiveness, refines) and implement `Detect(ctx, target, opts)`.
+
+### Fixed (found by the review and the bug-hunting suite)
+
+- **Cancellation:** a scan cancelled before a step armed its deadline waited
+  out the full timeout on every remaining step (the step's own deadline
+  overrode the one set on cancellation); the scan's overall deadline did not
+  cap per-operation timeouts.
+- **Parallel engine:** an early stop cancelled refinements of the matched
+  protocol (SunSpec after Modbus) and reported the probes it cancelled
+  itself as error results.
+- **BACnet identify:** all property reads shared one invoke ID, so a late or
+  duplicated answer was taken for the next property (the object name read as
+  the vendor name). Reads now use distinct invoke IDs and match answers by
+  invoke ID and property; EtherNet/IP over UDP and PROFINET discard replies
+  carrying another sender context or activity UUID.
+- **HTTP-based probes** (OpenADR, OCPP, IEEE 2030.5) read only the first TCP
+  segment, losing bodies sent separately, chunked or close-delimited.
+- **OPC UA identify** sent a zero RequestHeader timestamp, which open62541
+  (correctly) refuses with BadInvalidTimestamp.
+- **Contract:** OCPP, SunSpec and CAN returned an error for a reply that is
+  merely not their protocol (a close, garbage, a Modbus mismatch); DNP3 kept
+  reading after a malformed frame and waited out the timeout; a short reply
+  to a length-framed probe cost the whole timeout instead of an idle gap.
+- **OpenADR** was skipped by `--safe` although its OpenADR 3 probes are
+  passive GETs; it is passive now, with the 2.0b POST gated on read-only.
+- **CLI:** `otprobe detect <host>` without a port, documented as a sweep,
+  failed; `-o json` usage errors were rendered as text.
 
 ### Removed
 
