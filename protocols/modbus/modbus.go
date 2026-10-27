@@ -35,15 +35,15 @@ const (
 	readBasic   = 0x01
 	readRegular = 0x02
 
-	objVendorName   = 0x00
-	objProductCode  = 0x01
-	objRevision     = 0x02
-	objVendorURL    = 0x03
-	objProductName  = 0x04
-	objModelName    = 0x05
-	objUserAppName  = 0x06
-	maxPages        = 8
-	probeTID uint16 = 0x4F54 // "OT"
+	objVendorName         = 0x00
+	objProductCode        = 0x01
+	objRevision           = 0x02
+	objVendorURL          = 0x03
+	objProductName        = 0x04
+	objModelName          = 0x05
+	objUserAppName        = 0x06
+	maxPages              = 8
+	probeTID       uint16 = 0x4F54 // "OT"
 )
 
 // Config configures the fingerprinter.

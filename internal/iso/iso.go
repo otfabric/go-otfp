@@ -23,9 +23,9 @@ const (
 	TPDUError             = 0x70
 	TPDUData              = 0xF0
 
-	ParamTPDUSize   = 0xC0
+	ParamTPDUSize    = 0xC0
 	ParamCallingTSAP = 0xC1
-	ParamCalledTSAP = 0xC2
+	ParamCalledTSAP  = 0xC2
 )
 
 // TPKT wraps payload in a TPKT header.
