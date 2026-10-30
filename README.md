@@ -220,6 +220,7 @@ Beyond unit tests, the suite hunts for bugs in four ways:
 - [ERRORS.md](ERRORS.md) — the error taxonomy
 - [OBSERVABILITY.md](OBSERVABILITY.md) — logging, the Observer and tracing
 - [INTEROPERABILITY.md](INTEROPERABILITY.md) — the reference servers and how they are pinned
+- [LIMITATIONS.md](LIMITATIONS.md) — what the probes do not cover
 - [SECURITY.md](SECURITY.md) — safe use in OT networks and reporting issues
 - [CONTRIBUTING.md](CONTRIBUTING.md) · [RELEASE.md](RELEASE.md)
 
