@@ -9,3 +9,5 @@
 cover.*
 coverage.*
 *.out
+# Workspace checksums (go.work is only for the binary release build)
+go.work.sum

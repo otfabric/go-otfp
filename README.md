@@ -65,8 +65,11 @@ confidence model and the standards behind each detector.
 
 ```bash
 go get github.com/otfabric/go-otfp          # library
-go install github.com/otfabric/go-otfp/cmd/otprobe@latest  # CLI
 ```
+
+The CLI is a nested module, so the library does not depend on cobra. Download
+a binary from the [releases](https://github.com/otfabric/go-otfp/releases), or
+build it from a checkout with `make build`.
 
 ## CLI — `otprobe`
 
@@ -178,7 +181,7 @@ go-otfp/
 │   ├── testsrv/       scripted loopback servers for tests
 │   └── cmd/gencip/    generator for the EtherNet/IP CIP catalogue
 ├── protocols/         one package per protocol (see the table above)
-├── cmd/otprobe/       the CLI
+├── cmd/otprobe/       the CLI (nested module)
 ├── interop/           Docker-gated tests against the pinned reference servers
 └── docs …             API, ARCHITECTURE, FINGERPRINTS, ERRORS, …
 ```
