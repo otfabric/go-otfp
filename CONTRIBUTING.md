@@ -12,8 +12,8 @@ make check     # fmt, lint (staticcheck + golangci-lint), vet, govulncheck, race
 
 - Format with the gofmt of the Go version in `go.mod` (`make fmt`); CI checks
   both that gofmt and the local one.
-- Keep the library dependency-free (standard library only). The CLI may use
-  cobra. Never import a `go-<protocol>` library or an `*-interop` package
+- Keep the library dependency-free (standard library only). The CLI, a nested
+  module in `cmd/otprobe`, may use cobra. Never import a `go-<protocol>` library or an `*-interop` package
   from library or CLI code — they are for validation only.
 - Add tests for new behaviour, and a `Fuzz` target for any new parser. Keep
   library-package coverage at or above the codecov target.
