@@ -3,7 +3,7 @@
 # thanks to https://marmelab.com/blog/2016/02/29/auto-documented-makefile.html
 
 .DEFAULT_GOAL := help
-.PHONY: help all build examples stress release-notes install fmt fmt-check lint lint-ci vet vuln test test-race coverage cover bench fuzz generate generate-check check clean interop test-interop
+.PHONY: help all build examples stress release-notes install fmt fmt-check lint lint-ci vet vuln test test-race coverage cover bench fuzz generate generate-check check clean interop test-interop coverage-check cross e2e
 
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -136,6 +136,20 @@ generate-check: ## Fail when the generated CIP catalogue is out of date
 
 coverpkg-check: ## Fail when CI's coverpkg (.github/workflows/ci.yml) is not COVER_PKGS
 	@grep -qF -- "$(COVER_PKGS)" .github/workflows/ci.yml || { echo "coverpkg in .github/workflows/ci.yml must be: $(COVER_PKGS)"; exit 1; }
+
+coverage-check: coverage ## Alias of coverage, which already fails below COVER_MIN
+
+CROSS_PLATFORMS := linux/amd64 linux/arm64 linux/arm darwin/arm64 windows/amd64
+
+cross: ## Cross-compile without cgo for the supported platforms
+	@for p in $(CROSS_PLATFORMS); do \
+		echo "Building for $$p"; \
+		CGO_ENABLED=0 GOOS=$${p%/*} GOARCH=$${p#*/} go build ./... || exit 1; \
+		(cd $(CLI_DIR) && CGO_ENABLED=0 GOOS=$${p%/*} GOARCH=$${p#*/} go build -o /dev/null ./...) || exit 1; \
+	done
+
+e2e: ## End-to-end suite: the public engine against scripted servers on loopback TCP
+	@go test -count=1 -race -run '^(TestCrossProtocolMatrix|TestHostileServersBounded)$$' .
 
 check: coverpkg-check fmt fmt-check lint lint-ci vet vuln test-race coverage examples ## Run format + lint + vet + vuln + tests
 
