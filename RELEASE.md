@@ -3,7 +3,10 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
-## Unreleased
+## v0.2.0
+
+**Date:** 2026-10-30
+**Previous release:** v0.1.0
 
 ### Changed
 
