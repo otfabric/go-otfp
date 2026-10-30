@@ -29,11 +29,12 @@ jobs:
 
   release-otprobe-binary:
     needs: release-package
-    uses: otfabric/.github/.github/workflows/go-binary-release.yml@v2
+    uses: otfabric/.github/.github/workflows/go-binary-release.yml@v3.1.0
     with:
       bump: none
       binary-name: otprobe
-      main-path: ./cmd/otprobe
+      module-dir: cmd/otprobe
+      main-path: .
       ldflags: "-s -w -X main.version=${VERSION} -X main.tag=${TAG} -X main.commit=${COMMIT} -X main.buildDate=${BUILD_DATE}"
       run-tests: false
     secrets: inherit

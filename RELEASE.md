@@ -12,7 +12,6 @@
   inheriting it. Library import paths and the exported API are unchanged.
   - Release binaries are published as before.
   - Build from a checkout with `make build`, or `cd cmd/otprobe && go build .`.
-    `go build ./cmd/otprobe` from the root also works, through `go.work`.
   - `go install github.com/otfabric/go-otfp/cmd/otprobe@<version>` works up to
     v0.1.0 and not after it, while the nested module's `replace` is in place.
 
