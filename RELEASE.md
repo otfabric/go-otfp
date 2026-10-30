@@ -3,6 +3,20 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## Unreleased
+
+### Changed
+
+- **`cmd/otprobe` is now a nested module** (`github.com/otfabric/go-otfp/cmd/otprobe`,
+  ADR-0009). The library's `go.mod` no longer requires cobra, so consumers stop
+  inheriting it. Library import paths and the exported API are unchanged.
+  - Release binaries are published as before.
+  - Build from a checkout with `make build`, or `cd cmd/otprobe && go build .`.
+  - `go install github.com/otfabric/go-otfp/cmd/otprobe@<version>` works up to
+    v0.1.0 and not after it, while the nested module's `replace` is in place.
+
+---
+
 ## v0.1.0
 
 **Date:** 2026-10-27

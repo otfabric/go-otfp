@@ -18,6 +18,8 @@ GO_MOD_VERSION := $(shell sed -nE 's/^go ([0-9]+\.[0-9]+).*/\1/p' go.mod | head 
 GOFMT_CI = $(shell GOTOOLCHAIN=go$(GO_MOD_VERSION).0 go env GOROOT)/bin/gofmt
 
 BIN_DIR := bin
+# The CLI is a nested module (ADR-0009): ./... of this module does not reach it.
+CLI_DIR := cmd/otprobe
 PKGS := $(shell go list ./...)
 # Library packages for coverage (exclude the CLI, generators, test helpers and examples).
 COVER_PKGS := $(shell go list ./... | grep -vE '/cmd/|/internal/cmd|/internal/testsrv|/internal/fuzzkit|/examples' | paste -sd, -)
@@ -34,7 +36,7 @@ all: build ## Default target: build the otprobe binary
 
 build: ## Build the otprobe binary into ./bin
 	@mkdir -p $(BIN_DIR)
-	go build -ldflags "$(LDFLAGS)" -o $(BIN_DIR)/otprobe ./cmd/otprobe
+	cd $(CLI_DIR) && go build -ldflags "$(LDFLAGS)" -o "$(CURDIR)/$(BIN_DIR)/otprobe" .
 
 # The self-contained examples: each starts a demo device on loopback and exits.
 RUN_EXAMPLES := quickstart identify sweep custom observe
@@ -64,26 +66,32 @@ fmt-check: ## Fail if the go.mod-version gofmt or the local gofmt would change a
 lint: ## Run staticcheck
 	@echo "Running staticcheck"
 	@staticcheck ./...
+	@cd $(CLI_DIR) && staticcheck ./...
 
 lint-ci: ## Run golangci-lint
 	@echo "Running golangci-lint"
 	@golangci-lint run ./...
+	@cd $(CLI_DIR) && golangci-lint run ./...
 
 vet: ## Run go vet
 	@echo "Running go vet"
 	@go vet ./...
+	@cd $(CLI_DIR) && go vet ./...
 
 vuln: ## Run govulncheck
 	@echo "Running govulncheck"
 	@govulncheck ./...
+	@cd $(CLI_DIR) && govulncheck ./...
 
 test: ## Run the tests (no interop)
 	@echo "Running tests"
 	@go test -count=1 $(TEST_PKGS)
+	@cd $(CLI_DIR) && go test -count=1 ./...
 
 test-race: ## Run the tests with the race detector
 	@echo "Running race tests"
 	@go test -count=1 -race $(TEST_PKGS)
+	@cd $(CLI_DIR) && go test -count=1 -race ./...
 
 # Minimum library coverage; make coverage (and so make check) fails below it.
 COVER_MIN ?= 90
