@@ -13,8 +13,12 @@ permissions:
 
 jobs:
   ci:
-    uses: otfabric/.github/.github/workflows/go-ci.yml@v2
+    uses: otfabric/.github/.github/workflows/go-ci.yml@v2.1.0
     with:
+      run-govulncheck: true
+      coverage-min: "90"
+      fuzz-time: 10s
+      test-exclude-regex: "/example(s)?($|/)"
       codecov-name: go-otfp
       # Coverage across the library packages, as make coverage measures it;
       # the CLI, the generators and the test helpers are excluded. make
@@ -33,23 +37,3 @@ jobs:
         with:
           go-version: "1.23.x"
       - run: make build examples
-
-  # The parsers, and every fingerprinter end to end, must survive arbitrary
-  # bytes (FuzzDetect drives Detect against a server replying with fuzzed
-  # data and checks the Fingerprinter contract).
-  fuzz:
-    name: Fuzz
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v7
-        with:
-          go-version: "1.23.x"
-      - run: make fuzz FUZZTIME=15s
-      - name: Upload the failing inputs
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: fuzz-failures
-          path: "**/testdata/fuzz/"
-          if-no-files-found: warn
