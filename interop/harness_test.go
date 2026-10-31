@@ -231,9 +231,14 @@ func startContainer(t *testing.T, a adapter) int {
 	if a.publicURL {
 		args = append(args, "--public-url", fmt.Sprintf("http://127.0.0.1:%d", hostPort))
 	}
-	out, err := exec.Command("docker", args...).CombinedOutput()
+	// Stdout only: on a first run stderr carries the pull progress, which
+	// is not part of the container ID.
+	var stderr strings.Builder
+	run := exec.Command("docker", args...)
+	run.Stderr = &stderr
+	out, err := run.Output()
 	if err != nil {
-		t.Fatalf("docker run %s: %v\n%s", a.name, err, out)
+		t.Fatalf("docker run %s: %v\n%s", a.name, err, stderr.String())
 	}
 	id := strings.TrimSpace(string(out))
 	t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", id).Run() })
