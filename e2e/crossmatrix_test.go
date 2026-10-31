@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-package otfp_test
+package e2e_test
 
 import (
 	"context"

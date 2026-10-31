@@ -131,6 +131,17 @@ var adapters = []adapter{
 	},
 }
 
+// skipMissing skips for a missing prerequisite, or fails when
+// OTFP_REQUIRE_INTEROP=1: the nightly job sets it, so a broken checkout or
+// PKI cannot pass as a run of skips.
+func skipMissing(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if os.Getenv("OTFP_REQUIRE_INTEROP") == "1" {
+		t.Fatalf("OTFP_REQUIRE_INTEROP=1: "+format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
 func env(key, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -140,7 +151,7 @@ func env(key, def string) string {
 
 func TestInterop(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not found")
+		skipMissing(t, "docker not found")
 	}
 	only := os.Getenv("OTFP_INTEROP_ADAPTERS")
 	for _, a := range adapters {
@@ -204,7 +215,7 @@ func startContainer(t *testing.T, a adapter) int {
 	if a.mountRepo != "" {
 		dir := filepath.Join("..", "..", a.mountRepo)
 		if _, err := os.Stat(dir); err != nil {
-			t.Skipf("sibling fixtures %s not found (checkout %s beside go-otfp)", dir, a.mountRepo)
+			skipMissing(t, "sibling fixtures %s not found (checkout %s beside go-otfp)", dir, a.mountRepo)
 		}
 		abs, _ := filepath.Abs(dir)
 		args = append(args, "-v", abs+":"+a.mountAt+":ro")
@@ -280,13 +291,13 @@ func makePKI(t *testing.T) string {
 	t.Helper()
 	repo, _ := filepath.Abs(filepath.Join("..", "..", "ieee20305-interop"))
 	if _, err := os.Stat(filepath.Join(repo, "scripts", "lib.sh")); err != nil {
-		t.Skipf("ieee20305-interop not checked out beside go-otfp: %v", err)
+		skipMissing(t, "ieee20305-interop not checked out beside go-otfp: %v", err)
 	}
 	dir := filepath.Join(t.TempDir(), "tls")
 	cmd := exec.Command("bash", "-c", `source scripts/lib.sh && make_pki "$0" "$(jq -r .device.serial fixtures/baseline/fixture.json)" gridappsd-server envoy-server localhost 127.0.0.1 -- localhost`, dir)
 	cmd.Dir = repo
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("make_pki (needs bash, jq, openssl): %v\n%s", err, out)
+		skipMissing(t, "make_pki (needs bash, jq, openssl): %v\n%s", err, out)
 	}
 	return dir
 }
