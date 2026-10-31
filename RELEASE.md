@@ -3,6 +3,17 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## v0.2.2
+
+**Date:** 2026-10-31
+**Previous release:** v0.2.1
+
+### Changed
+
+- The bundled command-line tools are built on v0.2.1. Library code is the same as v0.2.1.
+
+---
+
 ## v0.2.1
 
 **Date:** 2026-10-31
