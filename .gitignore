@@ -9,3 +9,17 @@
 cover.*
 coverage.*
 *.out/cmd/otprobe/otprobe
+
+# Build artefacts live in /bin/ and /release/ (otfabric/engineering REPO-005)
+/release/
+*.test
+coverage.out
+
+# Output of a bare `go build`, anchored so it can never hide a source folder
+/cmd/otprobe/otprobe
+/examples/custom/custom
+/examples/identify/identify
+/examples/observe/observe
+/examples/quickstart/quickstart
+/examples/sweep/sweep
+/internal/cmd/gencip/gencip
