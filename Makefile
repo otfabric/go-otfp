@@ -3,7 +3,7 @@
 # thanks to https://marmelab.com/blog/2016/02/29/auto-documented-makefile.html
 
 .DEFAULT_GOAL := help
-.PHONY: help all build examples stress release-notes install fmt fmt-check lint lint-ci vet vuln test test-race coverage cover bench fuzz generate generate-check check clean interop test-interop coverage-check cross e2e
+.PHONY: help all build examples stress release-notes install fmt fmt-check lint lint-ci vet vuln test test-race coverage cover bench fuzz generate generate-check check clean interop test-interop coverage-check cross e2e coverage-pkg-check
 
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -22,7 +22,7 @@ BIN_DIR := bin
 CLI_DIR := cmd/otprobe
 PKGS := $(shell go list ./...)
 # Library packages for coverage (exclude the CLI, generators, test helpers and examples).
-COVER_PKGS := $(shell go list ./... | grep -vE '/cmd/|/internal/cmd|/internal/testsrv|/internal/fuzzkit|/examples' | paste -sd, -)
+COVER_PKGS := $(shell go list ./... | grep -vE '/cmd/|/internal/cmd|/internal/testsrv|/internal/fuzzkit|/examples|/e2e' | paste -sd, -)
 TEST_PKGS := $(shell go list ./... | grep -vE '/interop|/examples')
 INTEROP_TAGS := interop
 
@@ -95,6 +95,9 @@ test-race: ## Run the tests with the race detector
 
 # Minimum library coverage; make coverage (and so make check) fails below it.
 COVER_MIN ?= 90
+# Per-package floor (TEST-012), checked by coverage-pkg-check. Lowest package
+# measured: 92.6 % (protocols/openadr). See TESTING.md.
+COVER_PKG_MIN := 90
 
 coverage: ## Run tests with coverage across the library packages (writes coverage.out; fails below COVER_MIN%)
 	@echo "Running coverage (minimum $(COVER_MIN)%)"
@@ -102,6 +105,11 @@ coverage: ## Run tests with coverage across the library packages (writes coverag
 	@total=$$(go tool cover -func=coverage.out | awk '/^total:/ {sub("%","",$$3); print $$3}'); \
 	echo "total: $$total%"; \
 	awk -v t="$$total" -v m="$(COVER_MIN)" 'BEGIN { if (t+0 < m+0) { print "coverage " t "% is below " m "%"; exit 1 } }'
+
+coverage-pkg-check: coverage ## Fail when a package is below COVER_PKG_MIN (reads coverage.out)
+	@awk -v m="$(COVER_PKG_MIN)" 'NR > 1 { n[$$1] = $$2; if ($$3 > 0) h[$$1] = 1 } \
+	END { for (k in n) { p = k; sub(/\/[^\/]*$$/, "", p); s[p] += n[k]; if (k in h) c[p] += n[k] } \
+	for (p in s) { v = 100 * c[p] / s[p]; printf "%s %.1f%%\n", p, v; if (v < m) { printf "  below COVER_PKG_MIN: %s: %.1f%% < %s%%\n", p, v, m; bad = 1 } } exit bad }' coverage.out
 
 cover: coverage ## Open the coverage report in a browser
 	@go tool cover -html=coverage.out
@@ -149,9 +157,9 @@ cross: ## Cross-compile without cgo for the supported platforms
 	done
 
 e2e: ## End-to-end suite: the public engine against scripted servers on loopback TCP
-	@go test -count=1 -race -run '^(TestCrossProtocolMatrix|TestHostileServersBounded)$$' .
+	@go test -count=1 -race ./e2e/...
 
-check: coverpkg-check fmt fmt-check lint lint-ci vet vuln test-race coverage examples ## Run format + lint + vet + vuln + tests
+check: coverpkg-check fmt fmt-check lint lint-ci vet vuln test-race coverage coverage-pkg-check examples ## Run format + lint + vet + vuln + tests
 
 test-interop: ## Run the interop suite against the pinned reference servers (needs Docker)
 	@echo "Running interop tests (go-<protocol> reference images)"

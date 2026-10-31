@@ -205,11 +205,11 @@ Beyond unit tests, the suite hunts for bugs in four ways:
   against the Fingerprinter contract — bounded time, no panic, an error only
   for transport failures, `Matched` consistent with the confidence, valid
   UTF-8, marshals to JSON. Parsers have their own byte-level fuzz targets.
-- **Hostile servers** (`robustness_test.go`): every fingerprinter against
+- **Hostile servers** (`e2e/robustness_test.go`): every fingerprinter against
   silent, slow-drip (one byte every 20 ms forever), garbage and closing
   servers must return in bounded time without matching; concurrent use of one
   instance under `-race`; prompt cancellation; no goroutine leaks.
-- **Cross-protocol matrix** (`crossmatrix_test.go`): every fingerprinter
+- **Cross-protocol matrix** (`e2e/crossmatrix_test.go`): every fingerprinter
   against a minimal correct speaker of every other protocol — each speaker is
   detected as its own protocol and by no other.
 - **Interop** (`make interop`): detection and identity against the pinned,
