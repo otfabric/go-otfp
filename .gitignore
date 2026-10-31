@@ -8,4 +8,4 @@
 # Ignore coverage files
 cover.*
 coverage.*
-*.out
+*.out/cmd/otprobe/otprobe
