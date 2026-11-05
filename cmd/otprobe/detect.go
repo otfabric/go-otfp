@@ -42,8 +42,8 @@ type detectFlags struct {
 	// canopenNode is the CANopen node identified through a CiA 309-3
 	// gateway; 0 means the gateway's default node.
 	canopenNode int
-	trace     bool
-	debug     bool
+	trace       bool
+	debug       bool
 }
 
 var detectFormats = []string{"text", "json", "table"}
