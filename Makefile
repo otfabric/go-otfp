@@ -22,7 +22,7 @@ BIN_DIR := bin
 CLI_DIR := cmd/otprobe
 PKGS := $(shell go list ./...)
 # Library packages for coverage (exclude the CLI, generators, test helpers and examples).
-COVER_PKGS := $(shell go list ./... | grep -vE '/cmd/|/internal/cmd|/internal/testsrv|/internal/fuzzkit|/examples|/e2e' | paste -sd, -)
+COVER_PKGS := $(shell go list ./... | grep -vE '/cmd/|/internal/cmd|/internal/testsrv|/internal/fuzzkit|/internal/chaos|/examples|/e2e' | paste -sd, -)
 TEST_PKGS := $(shell go list ./... | grep -vE '/interop|/examples')
 INTEROP_TAGS := interop
 
