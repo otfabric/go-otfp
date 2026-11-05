@@ -3,6 +3,23 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## v0.3.1
+
+**Date:** 2026-11-05
+**Previous release:** v0.3.0
+
+### Changed
+
+- The bundled `otprobe` is built on v0.3.0: it detects and identifies KNXnet/IP, MQTT, Sparkplug B and CANopen (CiA 309-3 gateways), and lists and completes their slugs. Library code is the same as v0.3.0.
+- `otprobe detect --tls` uses the library's TLS fingerprinting configuration (`internal/tlsx`, TLS 1.2 minimum, certificates not verified, as before).
+- `--path` help now says what it does: the WebSocket path OCPP tries first (IEEE 2030.5 and OpenADR ignore it).
+
+### Added
+
+- `otprobe detect --canopen-node N` (1 to 127): the CANopen node whose identity is read through a CiA 309-3 gateway in `--identify` mode; out-of-range values exit 3 (`invalid_flag_combination`). Without it the gateway's default node is used, which CANopenNode does not set.
+
+---
+
 ## v0.3.0
 
 **Date:** 2026-11-05

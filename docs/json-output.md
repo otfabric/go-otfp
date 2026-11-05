@@ -34,7 +34,7 @@ A result:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `protocol` | string | stable slug: `modbus`, `sunspec`, `mms`, `s7comm`, `opcua`, `enip`, `bacnet`, `profinet`, `dnp3`, `iec104`, `ocpp`, `ieee2030.5`, `openadr`, `can` |
+| `protocol` | string | stable slug: `modbus`, `sunspec`, `mms`, `s7comm`, `opcua`, `enip`, `bacnet`, `profinet`, `dnp3`, `iec104`, `ocpp`, `ieee2030.5`, `openadr`, `can`, `knx`, `mqtt`, `sparkplugb`, `canopen` |
 | `name` | string | human-readable protocol name |
 | `matched` | bool | confidence reached the match threshold (0.50) |
 | `confidence` | number | 0.0–1.0 on the shared scale (see FINGERPRINTS.md) |

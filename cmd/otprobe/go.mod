@@ -3,7 +3,7 @@ module github.com/otfabric/go-otfp/cmd/otprobe
 go 1.26
 
 require (
-	github.com/otfabric/go-otfp v0.2.2
+	github.com/otfabric/go-otfp v0.3.0
 	github.com/spf13/cobra v1.10.2
 )
 

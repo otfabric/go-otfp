@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/otfabric/go-otfp/core"
@@ -60,6 +61,8 @@ func TestExitCodes(t *testing.T) {
 		{"tls over udp", []string{"detect", "udp://127.0.0.1:47808", "--tls"}, exitInvalidInput},
 		{"port and ports", []string{"detect", "127.0.0.1", "--port", "1", "--ports", "2"}, exitInvalidInput},
 		{"conc without parallel", []string{"detect", "127.0.0.1:1", "--max-concurrency", "2"}, exitInvalidInput},
+		{"canopen node too high", []string{"detect", "127.0.0.1:1", "--canopen-node", "128"}, exitInvalidInput},
+		{"canopen node negative", []string{"detect", "127.0.0.1:1", "--canopen-node", "-1"}, exitInvalidInput},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -173,7 +176,7 @@ func TestListAndVersion(t *testing.T) {
 	var l struct {
 		Protocols []struct{ Protocol, Network string }
 	}
-	if json.Unmarshal([]byte(out), &l) != nil || len(l.Protocols) != len(core.AllProtocols())+1 {
+	if json.Unmarshal([]byte(out), &l) != nil || len(l.Protocols) != len(core.AllProtocols())+2 {
 		t.Fatalf("list json: %s", out)
 	}
 	for _, f := range []string{"text", "table"} {
@@ -203,5 +206,41 @@ func TestParseTargets(t *testing.T) {
 	ts, _, _ = parseTargets("10.0.0.5", f)
 	if len(ts) == 0 || ts[0].Port != 47808 {
 		t.Fatalf("bacnet sweep %v", ts)
+	}
+}
+
+// TestCANopenNode checks that --canopen-node reaches the CANopen
+// fingerprinter: identify reads the identity object of that node.
+func TestCANopenNode(t *testing.T) {
+	var mu sync.Mutex
+	var reads []string
+	gw := testsrv.TCP(t, func(req []byte) ([]byte, bool) {
+		var out []byte
+		for _, line := range strings.Split(string(req), "\n") {
+			line = strings.TrimSpace(line)
+			i := strings.IndexByte(line, ']')
+			if !strings.HasPrefix(line, "[") || i < 0 {
+				continue
+			}
+			seq, cmd := line[:i+1], strings.TrimSpace(line[i+1:])
+			if cmd == "info version" {
+				out = append(out, seq+" ERROR:100\r\n"...)
+				continue
+			}
+			mu.Lock()
+			reads = append(reads, cmd)
+			mu.Unlock()
+			out = append(out, seq+" ERROR:0x06020000\r\n"...) // object does not exist
+		}
+		return out, false
+	})
+	code, out, errw := exec("detect", addr(gw), "--protocol", "canopen", "--identify", "--canopen-node", "32", "-t", "500ms")
+	if code != exitDetected {
+		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, out, errw)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reads) == 0 || !strings.HasPrefix(reads[0], "32 r 0x1018") {
+		t.Fatalf("identity reads %q, want node 32's 0x1018", reads)
 	}
 }
