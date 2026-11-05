@@ -589,6 +589,10 @@ sunspec	SunSpec Modbus
 ocpp	OCPP
 ieee2030.5	IEEE 2030.5
 openadr	OpenADR
+knx	KNXnet/IP
+mqtt	MQTT
+sparkplugb	Sparkplug B
+canopen	CANopen (CiA 309-3 gateway)
 :6
 ```
 
@@ -618,7 +622,8 @@ Run `otprobe detect --help` for the full list:
 | `--parallel`, `--max-concurrency` | concurrent probes (off by default) |
 | `--min-interval` | delay between probes |
 | `--all` | run every probe, no early stop |
-| `--path` | HTTP/WebSocket path (OCPP station id) |
+| `--path` | WebSocket path OCPP tries first (station id) |
+| `--canopen-node` | CANopen node (1-127) identified through a CiA 309-3 gateway (default: the gateway's default node) |
 | `-o, --format` | `text` (default), `table`, `json` |
 | `--trace` | raw probe and response bytes |
 | `--debug` | log each probe to stderr |

@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +17,8 @@ import (
 
 	otfp "github.com/otfabric/go-otfp"
 	"github.com/otfabric/go-otfp/core"
+	"github.com/otfabric/go-otfp/internal/tlsx"
+	"github.com/otfabric/go-otfp/protocols/canopen"
 	"github.com/spf13/cobra"
 )
 
@@ -38,8 +39,11 @@ type detectFlags struct {
 	allProbes bool
 	format    string
 	path      string
-	trace     bool
-	debug     bool
+	// canopenNode is the CANopen node identified through a CiA 309-3
+	// gateway; 0 means the gateway's default node.
+	canopenNode int
+	trace       bool
+	debug       bool
 }
 
 var detectFormats = []string{"text", "json", "table"}
@@ -92,7 +96,8 @@ internal error. See docs/exitcodes.md.`,
 	fl.DurationVar(&f.minGap, "min-interval", 0, "minimum delay between probes")
 	fl.BoolVar(&f.allProbes, "all", false, "run every applicable probe instead of stopping at the first confident match")
 	formatFlag(cmd, &f.format, detectFormats...)
-	fl.StringVar(&f.path, "path", "", "HTTP/WebSocket path to try first (OCPP station id, OpenADR or 2030.5 base path)")
+	fl.StringVar(&f.path, "path", "", "WebSocket path OCPP tries first (e.g. the station id)")
+	fl.IntVar(&f.canopenNode, "canopen-node", 0, "CANopen node (1-127) to identify through a CiA 309-3 gateway (default: the gateway's default node)")
 	fl.BoolVar(&f.trace, "trace", false, "include the raw probe and response bytes")
 	fl.BoolVar(&f.debug, "debug", false, "log every probe to stderr")
 
@@ -100,7 +105,7 @@ internal error. See docs/exitcodes.md.`,
 	_ = cmd.RegisterFlagCompletionFunc("exclude", protocolCompletion)
 	_ = cmd.RegisterFlagCompletionFunc("network", fixedCompletion("tcp\tTCP (with --tls: TLS)", "udp\tUDP datagrams"))
 	_ = cmd.RegisterFlagCompletionFunc("ports", portCompletion)
-	for _, name := range []string{"port", "timeout", "deadline", "max-concurrency", "min-interval", "path"} {
+	for _, name := range []string{"port", "timeout", "deadline", "max-concurrency", "min-interval", "path", "canopen-node"} {
 		_ = cmd.RegisterFlagCompletionFunc(name, cobra.NoFileCompletions)
 	}
 	return cmd
@@ -134,7 +139,7 @@ func runDetect(f detectFlags, arg string, stdout, stderr io.Writer) error {
 		defer cancel()
 	}
 
-	engine := otfp.NewEngine(cfg)
+	engine := core.NewEngine(registry(f), cfg)
 	var scans []scan
 	for _, t := range targets {
 		rep, err := engine.Scan(ctx, t)
@@ -191,7 +196,7 @@ func parseTargets(arg string, f detectFlags) ([]core.Target, bool, error) {
 		t.Network = n
 	}
 	if f.useTLS && t.TLS == nil {
-		t.TLS = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // fingerprinting identifies, it does not trust
+		t.TLS = tlsx.Fingerprint()
 	}
 	if t.TLS != nil && t.Network == core.UDP {
 		return nil, false, fail(kindInvalidInput, codeInvalidFlags, "TLS is not available over UDP")
@@ -279,7 +284,24 @@ func selectedProtocols(f detectFlags) (map[core.Protocol]bool, error) {
 	return m, nil
 }
 
+// registry is the default registry, with the CANopen fingerprinter set to
+// --canopen-node when given.
+func registry(f detectFlags) *core.Registry {
+	fps := otfp.Fingerprinters()
+	if f.canopenNode != 0 {
+		for i, fp := range fps {
+			if fp.Info().Protocol == core.ProtocolCANopen {
+				fps[i] = canopen.NewWithConfig(canopen.Config{Node: f.canopenNode})
+			}
+		}
+	}
+	return core.NewRegistry().MustRegister(fps...)
+}
+
 func engineConfig(f detectFlags, sweep bool, stderr io.Writer) (core.EngineConfig, error) {
+	if f.canopenNode < 0 || f.canopenNode > 127 {
+		return core.EngineConfig{}, fail(kindInvalidInput, codeInvalidFlags, "--canopen-node %d: a CANopen node is 1 to 127", f.canopenNode)
+	}
 	cfg := core.DefaultEngineConfig()
 	if f.safe {
 		cfg = core.SafeEngineConfig()
