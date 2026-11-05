@@ -62,48 +62,48 @@ type adapter struct {
 var adapters = []adapter{
 	{
 		name: "modbus-pymodbus", proto: core.ProtocolModbus, port: 1502,
-		image:    env("OTFP_MODBUS_IMAGE", "ghcr.io/otfabric/modbus-interop-pymodbus@sha256:33b703491abc2f15c229ff433ffbb79eb00e86a8c56c30fb7799c8ed13832f5a"),
+		image:    env("OTFP_MODBUS_IMAGE", "ghcr.io/otfabric/modbus-interop-pymodbus@sha256:dbd305a7789a0f1469d403a163ce463297cda77066bf4b1a14d7604031361e3b"),
 		cmd:      []string{"server", "--fixture", "/fixtures/baseline/fixture.json"},
 		identity: "otfabric",
 	},
 	{
 		name: "dnp3-opendnp3", proto: core.ProtocolDNP3, port: 20000,
-		image: env("OTFP_DNP3_IMAGE", "ghcr.io/otfabric/dnp3-interop-opendnp3@sha256:abc0d87ef30aceff748cc513f1e5840618ea9a78cc8a4713ba67d06507089314"),
+		image: env("OTFP_DNP3_IMAGE", "ghcr.io/otfabric/dnp3-interop-opendnp3@sha256:76a2baa2da118e049196d2b7310f84cc79b38ddf0443a40e410e4553f4773203"),
 		cmd:   []string{"server", "--fixture", "/fixtures/baseline/fixture.json"},
 	},
 	{
 		name: "iec104-lib60870", proto: core.ProtocolIEC104, port: 2404,
-		image: env("OTFP_IEC104_IMAGE", "ghcr.io/otfabric/iec104-interop-lib60870@sha256:c2f6df54d5b0bdda0411db7ad601b77e320d8d628e6988cd1c7d507f4e56ba72"),
+		image: env("OTFP_IEC104_IMAGE", "ghcr.io/otfabric/iec104-interop-lib60870@sha256:c1f0cc95e39316df8c182b887b933e0488c92845fedade00605aedc816a0af9a"),
 		cmd:   []string{"server", "--fixture", "/fixtures/baseline/fixture.json"},
 	},
 	{
 		name: "s7-snap7", proto: core.ProtocolS7, port: 102,
-		image:     env("OTFP_S7_IMAGE", "ghcr.io/otfabric/snap7-interop-native@sha256:66e3826813005bfacb8510ce5de33119315499325b35bf616dcf61de0506a342"),
+		image:     env("OTFP_S7_IMAGE", "ghcr.io/otfabric/snap7-interop-native@sha256:6b97b3233346323508c5c3caf7be3a151fa75ac017592d14919b7112efa46b88"),
 		env:       map[string]string{"SNAP_INTEROP_FIXTURE": "/fixtures/basic-db.compiled.json", "SNAP_INTEROP_LISTEN_ADDRESS": "0.0.0.0", "SNAP_INTEROP_PORT": "102", "SNAP_INTEROP_STATE_PATH": "/tmp/state.json"},
 		mountRepo: "snap7-interop/fixtures/compiled", mountAt: "/fixtures",
 	},
 	{
 		name: "opcua-open62541", proto: core.ProtocolOPCUA, port: 4840,
-		image:     env("OTFP_OPCUA_IMAGE", "ghcr.io/otfabric/opcua-interop-open62541@sha256:ff00dd63217f42c68e5233563d3d0b75290838f4d01e866fe1f9e1c730adcdbc"),
+		image:     env("OTFP_OPCUA_IMAGE", "ghcr.io/otfabric/opcua-interop-open62541@sha256:6e87e0a33ed42450b923eb5576f5e3b730c3c3cdd1c489ea7da9f197631a2441"),
 		cmd:       []string{"server", "--fixture", "/fixtures/baseline/fixture.json", "--bind-address", "0.0.0.0", "--bind-port", "4840"},
 		identity:  "OTFabric OPC UA Compatibility Server", // GetEndpoints decoded
 		mountRepo: "opcua-interop/fixtures", mountAt: "/fixtures",
 	},
 	{
 		name: "enip-opener", proto: core.ProtocolENIP, port: 44818,
-		image:    env("OTFP_ENIP_IMAGE", "ghcr.io/otfabric/ethernetip-interop-opener@sha256:bf7c3d9078cef6299c90c12a8460437fdd85a041ef2e227133609c3ad0a45526"),
+		image:    env("OTFP_ENIP_IMAGE", "ghcr.io/otfabric/ethernetip-interop-opener@sha256:6dc59b7b846398575e1dabf57ed62d6c45ab165dc4804ae4fbe0d59e7fd4c1d2"),
 		cmd:      []string{"server"},
 		identity: "OpENer",
 	},
 	{
 		name: "bacnet-stack", proto: core.ProtocolBACnet, port: 47808, udp: true,
-		image:    env("OTFP_BACNET_IMAGE", "ghcr.io/otfabric/bacnet-interop-bacnet-stack@sha256:78d21078ea8b5444e346ca6ee23aa0b1539ee8f036d759fea1f0fdbea35c0d30"),
+		image:    env("OTFP_BACNET_IMAGE", "ghcr.io/otfabric/bacnet-interop-bacnet-stack@sha256:3a941e08fbe47cf6c7dfb2a8036b4902f824e8dd178dc7b2ff846942b72ad47a"),
 		env:      map[string]string{"FIXTURE": "device-baseline-v2"},
 		identity: "InteropDevice",
 	},
 	{
 		name: "ocpp-mobilityhouse", proto: core.ProtocolOCPP, port: 9000,
-		image:   env("OTFP_OCPP_IMAGE", "ghcr.io/otfabric/ocpp-interop-mobilityhouse@sha256:3f14958e9f21d85d3e18542bcbc9460bc8b7163a2982f4539dc7b8f78eb70fca"),
+		image:   env("OTFP_OCPP_IMAGE", "ghcr.io/otfabric/ocpp-interop-mobilityhouse@sha256:14d8da52ba062873fdc55834585dcd97b2405557004a3c438f04ee60e1bff1b5"),
 		cmd:     []string{"server", "--version", "2.0.1"},
 		variant: "OCPP",
 		path:    "/ocpp/OT-FABRIC-TEST-001", // the fixture's known station
@@ -112,19 +112,19 @@ var adapters = []adapter{
 		// GridAPPS-D offers only CCM_8, which no Go TLS client can use: the
 		// raw-hello probe still recognises it.
 		name: "ieee2030-gridappsd", proto: core.ProtocolIEEE2030_5, port: 443, pki: true,
-		image:    env("OTFP_IEEE2030_GRIDAPPSD_IMAGE", "ghcr.io/otfabric/ieee20305-interop-gridappsd@sha256:7b04e6c482df6536d15ba06e17e4c317a68031cabeed54cc03bc5b395f5b8d68"),
+		image:    env("OTFP_IEEE2030_GRIDAPPSD_IMAGE", "ghcr.io/otfabric/ieee20305-interop-gridappsd@sha256:c72fbdb7c91fae1a59ee87938cc834651db2924317dd362814dc682d57a5b3af"),
 		cmd:      []string{"server", "--version", "2018", "--tls-dir", "/tls/server"},
 		identity: "CN=gridappsd-server",
 	},
 	{
 		name: "ieee2030-envoy", proto: core.ProtocolIEEE2030_5, port: 443, pki: true,
-		image:    env("OTFP_IEEE2030_ENVOY_IMAGE", "ghcr.io/otfabric/ieee20305-interop-envoy@sha256:2dd3587071de81d7b96a7dbf65bf414a06a643a32f5d785b42ba7ebb0cb04d2d"),
+		image:    env("OTFP_IEEE2030_ENVOY_IMAGE", "ghcr.io/otfabric/ieee20305-interop-envoy@sha256:850d16d293866fbd424716df6f3fb5ebb954a87616e10b082dbe5ea16c3f1bdb"),
 		cmd:      []string{"server", "--version", "2018", "--tls-dir", "/tls/server"},
 		identity: "CN=",
 	},
 	{
 		name: "openadr-openleadr", proto: core.ProtocolOpenADR, port: 8080,
-		image:     env("OTFP_OPENADR_IMAGE", "ghcr.io/otfabric/openadr-interop-openleadr@sha256:b8221b89983a5b7cdc69cea92443e05416336ad1ddcd843250770d65950b4fb2"),
+		image:     env("OTFP_OPENADR_IMAGE", "ghcr.io/otfabric/openadr-interop-openleadr@sha256:331f178d185537743fbda4b3d5cf9d03e629f41e5b1a7f0865ec1e07e6c7b3a3"),
 		cmd:       []string{"server", "--fixture", "/fixtures/baseline/fixture.json"},
 		variant:   "OpenADR",
 		publicURL: true,
