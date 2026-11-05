@@ -83,13 +83,11 @@ func TestConcurrentUseOfOneInstance(t *testing.T) {
 		t.Run(info.Protocol.Slug()+"-"+info.Network.String(), func(t *testing.T) {
 			t.Parallel()
 			var wg sync.WaitGroup
-			for i := 0; i < 8; i++ {
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
+			for range 8 {
+				wg.Go(func() {
 					r, err := fp.Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify, Trace: true, MaxIntrusiveness: core.ReadOnly})
 					fuzzkit.Check(t, info.Protocol, r, err)
-				}()
+				})
 			}
 			wg.Wait()
 		})

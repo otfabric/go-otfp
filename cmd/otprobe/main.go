@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -53,8 +54,7 @@ read-only service. It never writes, controls or reconfigures a device.`,
 	if err == nil {
 		return exitDetected
 	}
-	var st *exitStatus
-	if errors.As(err, &st) {
+	if st, ok := errors.AsType[*exitStatus](err); ok {
 		return st.code
 	}
 	return render(err, wantsJSON(args), stdout, stderr)
@@ -94,10 +94,8 @@ func formatFlag(cmd *cobra.Command, dst *string, choices ...string) {
 }
 
 func checkFormat(format string, choices ...string) error {
-	for _, c := range choices {
-		if format == c {
-			return nil
-		}
+	if slices.Contains(choices, format) {
+		return nil
 	}
 	return fail(kindInvalidInput, codeInvalidFormat, "unknown --format %q (want %s)", format, strings.Join(choices, ", "))
 }

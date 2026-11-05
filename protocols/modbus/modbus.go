@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/fpx"
@@ -222,7 +223,7 @@ func parseDeviceID(data []byte) (deviceID, error) {
 	d := deviceID{conformity: data[2], more: data[3] == 0xFF, next: data[4], objects: map[byte]string{}}
 	n := int(data[5])
 	p := data[6:]
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if len(p) < 2 || len(p) < 2+int(p[1]) {
 			return d, fmt.Errorf("object %d overruns the response", i)
 		}
@@ -253,9 +254,7 @@ func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, s *wire.Se
 		if d, err = parseDeviceID(r2.Data); err != nil {
 			break
 		}
-		for k, v := range d.objects {
-			objs[k] = v
-		}
+		maps.Copy(objs, d.objects)
 	}
 	fillIdentity(b.Identity(), objs)
 	b.Evidence(fmt.Sprintf("device identification: %d objects", len(objs)))

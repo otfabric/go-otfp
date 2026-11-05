@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/otfabric/go-otfp/core"
@@ -257,12 +258,12 @@ func asduHeader(a []byte) (typeID byte, ca uint16, ok bool) {
 }
 
 func joinInts(v []int) string {
-	s := ""
+	var s strings.Builder
 	for i, x := range v {
 		if i > 0 {
-			s += ","
+			s.WriteString(",")
 		}
-		s += fmt.Sprint(x)
+		s.WriteString(fmt.Sprint(x))
 	}
-	return s
+	return s.String()
 }

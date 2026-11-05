@@ -309,7 +309,7 @@ func (s *Session) udpRoundTrip(probe []byte, max int, accept func([]byte) bool) 
 	buf := make([]byte, max)
 	attempts := s.Retries + 1
 	per := s.timeout / time.Duration(attempts)
-	for i := 0; i < attempts; i++ {
+	for i := range attempts {
 		if err := s.Send(probe); err != nil {
 			return nil, err
 		}
@@ -337,8 +337,7 @@ func (s *Session) udpRoundTrip(probe []byte, max int, accept func([]byte) bool) 
 }
 
 func isReset(err error) bool {
-	var op *net.OpError
-	if errors.As(err, &op) {
+	if op, ok := errors.AsType[*net.OpError](err); ok {
 		return !op.Timeout() && op.Op == "read"
 	}
 	return false

@@ -166,9 +166,7 @@ func serve(t *testing.T, n core.Network, replies [][]byte) core.Target {
 	t.Cleanup(func() { _ = ln.Close(); wg.Wait() })
 	var mu sync.Mutex
 	next := 0 // replies are shared across connections, in order
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
@@ -202,7 +200,7 @@ func serve(t *testing.T, n core.Network, replies [][]byte) core.Target {
 				}
 			}()
 		}
-	}()
+	})
 	return target(ln.Addr(), n)
 }
 

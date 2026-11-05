@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"strings"
 
@@ -59,7 +60,7 @@ func protocolCompletion(_ *cobra.Command, _ []string, toComplete string) ([]stri
 	prefix, given := "", map[string]bool{}
 	if i := strings.LastIndex(toComplete, ","); i >= 0 {
 		prefix = toComplete[:i+1]
-		for _, v := range strings.Split(toComplete[:i], ",") {
+		for v := range strings.SplitSeq(toComplete[:i], ",") {
 			given[v] = true
 		}
 	}
@@ -108,10 +109,8 @@ func targetCompletion(_ *cobra.Command, args []string, toComplete string) ([]str
 }
 
 func appendUnique(s []string, v string) []string {
-	for _, x := range s {
-		if x == v {
-			return s
-		}
+	if slices.Contains(s, v) {
+		return s
 	}
 	return append(s, v)
 }

@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/otfabric/go-otfp/core"
@@ -309,7 +310,7 @@ func stripSecurityHeader(typ string, body []byte) ([]byte, bool) {
 			return nil, false
 		}
 		p = p[4:]
-		for i := 0; i < 3; i++ {
+		for range 3 {
 			_, rest, ok := getBytes(p)
 			if !ok {
 				return nil, false
@@ -382,7 +383,7 @@ func skipResponseHeader(b []byte) []byte {
 	n := int32(binary.LittleEndian.Uint32(p))
 	p = p[4:]
 	if n > 0 {
-		for i := int32(0); i < n; i++ {
+		for range n {
 			_, rest, ok := getBytes(p)
 			if !ok {
 				return nil
@@ -436,7 +437,7 @@ func parseEndpoints(resp []byte) ([]endpoint, error) {
 		return nil, fmt.Errorf("endpoint count %d", n)
 	}
 	var out []endpoint
-	for i := int32(0); i < n; i++ {
+	for i := range n {
 		var e endpoint
 		if p, e, ok = decodeEndpoint(p); !ok {
 			if len(out) > 0 {
@@ -521,7 +522,7 @@ func skipUserTokenPolicies(p []byte) ([]byte, bool) {
 	if n < 0 {
 		return p, true
 	}
-	for i := int32(0); i < n; i++ {
+	for range n {
 		// policyId(String), tokenType(enum), issuedTokenType(String),
 		// issuerEndpointUrl(String), securityPolicyUri(String).
 		var ok bool
@@ -532,7 +533,7 @@ func skipUserTokenPolicies(p []byte) ([]byte, bool) {
 			return nil, false
 		}
 		p = p[4:]
-		for j := 0; j < 3; j++ {
+		for range 3 {
 			if _, p, ok = getString(p); !ok {
 				return nil, false
 			}
@@ -550,7 +551,7 @@ func skipStringArray(p []byte) ([]byte, bool) {
 	if n < 0 {
 		return p, true
 	}
-	for i := int32(0); i < n; i++ {
+	for range n {
 		var ok bool
 		if _, p, ok = getBytes(p); !ok {
 			return nil, false
@@ -619,12 +620,12 @@ func lastHash(s string) int {
 }
 
 func join(v []string) string {
-	s := ""
+	var s strings.Builder
 	for i, x := range v {
 		if i > 0 {
-			s += ","
+			s.WriteString(",")
 		}
-		s += x
+		s.WriteString(x)
 	}
-	return s
+	return s.String()
 }

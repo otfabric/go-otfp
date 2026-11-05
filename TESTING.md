@@ -6,7 +6,7 @@ How to run each tier. Peers and images are in [INTEROPERABILITY.md](INTEROPERABI
 
 | Tier | Command | Prerequisites | In CI |
 |---|---|---|---|
-| Unit | `make test`, `make test-race` | none | yes, Go 1.23 to 1.26 |
+| Unit | `make test`, `make test-race` | none | yes, Go 1.26 and 1.27 |
 | End-to-end | `make e2e` (`e2e/`) | none | yes, in the test matrix |
 | Stress | `make stress` (`STRESS`, default 10 shuffled race runs) | none | nightly |
 | Fuzz | `make fuzz` (`FUZZTIME`, default 20s) | none | yes, 10s per target; nightly 5m per target |

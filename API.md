@@ -1,6 +1,6 @@
 # API reference — `github.com/otfabric/go-otfp`
 
-> Go ≥ 1.23 · standard-library core · the CLI adds [cobra](https://github.com/spf13/cobra).
+> Go ≥ 1.26 · standard-library core · the CLI adds [cobra](https://github.com/spf13/cobra).
 
 Complete reference for the exported API. The authoritative, always-current
 reference is [pkg.go.dev](https://pkg.go.dev/github.com/otfabric/go-otfp).

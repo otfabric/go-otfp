@@ -178,8 +178,8 @@ func (f *Fingerprinter) readDcap(ctx context.Context, b *fpx.Builder, target cor
 }
 
 func parseDcap(b *fpx.Builder, body string) {
-	if i := strings.Index(body, "pollRate=\""); i >= 0 {
-		rest := body[i+len("pollRate=\""):]
+	if _, after, ok := strings.Cut(body, "pollRate=\""); ok {
+		rest := after
 		if j := strings.IndexByte(rest, '"'); j > 0 {
 			b.Identity().Set("pollRate", rest[:j])
 		}

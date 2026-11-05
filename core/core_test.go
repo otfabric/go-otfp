@@ -134,8 +134,7 @@ func TestClassify(t *testing.T) {
 	if !IsTimeout(os.ErrDeadlineExceeded) || !IsTimeout(context.DeadlineExceeded) {
 		t.Fatal("timeout detection")
 	}
-	var te *TimeoutError
-	if !errors.As(ClassifyDial(ProtocolModbus, "a", context.DeadlineExceeded), &te) {
+	if _, ok := errors.AsType[*TimeoutError](ClassifyDial(ProtocolModbus, "a", context.DeadlineExceeded)); !ok {
 		t.Fatal("dial timeout")
 	}
 	var ce *ConnectionError

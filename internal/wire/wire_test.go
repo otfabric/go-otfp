@@ -62,8 +62,7 @@ func TestTimeout(t *testing.T) {
 	s := dial(t, target, core.Options{})
 	defer s.Close()
 	_, err := s.RoundTrip("x", []byte("hi"), lenFramer, 64)
-	var te *core.TimeoutError
-	if !errors.As(err, &te) {
+	if _, ok := errors.AsType[*core.TimeoutError](err); !ok {
 		t.Fatalf("want TimeoutError, got %v", err)
 	}
 }
@@ -95,8 +94,7 @@ func TestUDPRoundTrip(t *testing.T) {
 
 func TestDialFails(t *testing.T) {
 	_, err := wire.Dial(context.Background(), core.ProtocolModbus, testsrv.Closed(t), core.Options{})
-	var ce *core.ConnectionError
-	if !errors.As(err, &ce) {
+	if _, ok := errors.AsType[*core.ConnectionError](err); !ok {
 		t.Fatalf("want ConnectionError, got %v", err)
 	}
 }

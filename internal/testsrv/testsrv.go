@@ -29,17 +29,13 @@ func TCP(t testing.TB, h Handler) core.Target {
 	}
 	var wg sync.WaitGroup
 	t.Cleanup(func() { _ = ln.Close(); wg.Wait() })
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				defer c.Close() //nolint:errcheck
 				buf := make([]byte, 65536)
 				for {
@@ -58,9 +54,9 @@ func TCP(t testing.TB, h Handler) core.Target {
 						return
 					}
 				}
-			}()
+			})
 		}
-	}()
+	})
 	return target(t, ln.Addr(), core.TCP)
 }
 
@@ -74,22 +70,18 @@ func Raw(t testing.TB, fn func(c net.Conn)) core.Target {
 	}
 	var wg sync.WaitGroup
 	t.Cleanup(func() { _ = ln.Close(); wg.Wait() })
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				defer c.Close() //nolint:errcheck
 				fn(c)
-			}()
+			})
 		}
-	}()
+	})
 	return target(t, ln.Addr(), core.TCP)
 }
 

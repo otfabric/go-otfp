@@ -4,6 +4,7 @@ package core
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 )
@@ -84,7 +85,7 @@ func (r *Registry) Protocols() []Protocol {
 	for p := range seen {
 		out = append(out, p)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	slices.Sort(out)
 	return out
 }
 
@@ -109,10 +110,5 @@ func (r *Registry) Plan(target Target) []Fingerprinter {
 }
 
 func hasPort(ports []int, p int) bool {
-	for _, x := range ports {
-		if x == p {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ports, p)
 }

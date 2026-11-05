@@ -151,8 +151,7 @@ func TestTimeoutAndRefused(t *testing.T) {
 	target := testsrv.TCP(t, testsrv.Script())
 	target.Timeout = 200 * time.Millisecond
 	_, err := New().Detect(context.Background(), target, core.Options{})
-	var te *core.TimeoutError
-	if !errors.As(err, &te) {
+	if _, ok := errors.AsType[*core.TimeoutError](err); !ok {
 		t.Fatalf("silent: %v", err)
 	}
 	_, err = New().Detect(context.Background(), testsrv.Closed(t), core.Options{})

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/fpx"
@@ -109,7 +110,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	}
 	resp, err := s.RoundTrip("link-status", burst, Framer, maxFrame)
 	var status *Header
-	for i := 0; i < maxFrames; i++ {
+	for range maxFrames {
 		if err != nil {
 			break
 		}
@@ -300,7 +301,7 @@ func Frame(ctrl byte, dst, src uint16, data []byte) []byte {
 var crcTable = func() (t [256]uint16) {
 	for i := range t {
 		c := uint16(i)
-		for j := 0; j < 8; j++ {
+		for range 8 {
 			if c&1 != 0 {
 				c = c>>1 ^ 0xA6BC
 			} else {
@@ -385,8 +386,8 @@ func attrString(typ byte, v []byte) string {
 		return fpx.Clean(string(v))
 	case 2: // unsigned integer
 		var x uint64
-		for i := len(v) - 1; i >= 0; i-- {
-			x = x<<8 | uint64(v[i])
+		for _, v0 := range slices.Backward(v) {
+			x = x<<8 | uint64(v0)
 		}
 		return fmt.Sprint(x)
 	}
