@@ -29,38 +29,15 @@ func TCP(t testing.TB, h Handler) core.Target {
 	}
 	var wg sync.WaitGroup
 	t.Cleanup(func() { _ = ln.Close(); wg.Wait() })
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				defer c.Close() //nolint:errcheck
-				buf := make([]byte, 65536)
-				for {
-					_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
-					n, err := c.Read(buf)
-					if err != nil {
-						return
-					}
-					resp, closeConn := h(append([]byte(nil), buf[:n]...))
-					if resp != nil {
-						if _, err := c.Write(resp); err != nil {
-							return
-						}
-					}
-					if closeConn {
-						return
-					}
-				}
-			}()
+			wg.Go(func() { serveConn(c, h) })
 		}
-	}()
+	})
 	return target(t, ln.Addr(), core.TCP)
 }
 
@@ -74,23 +51,45 @@ func Raw(t testing.TB, fn func(c net.Conn)) core.Target {
 	}
 	var wg sync.WaitGroup
 	t.Cleanup(func() { _ = ln.Close(); wg.Wait() })
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
 				return
 			}
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				defer c.Close() //nolint:errcheck
-				fn(c)
-			}()
+			wg.Go(func() { rawConn(c, fn) })
 		}
-	}()
+	})
 	return target(t, ln.Addr(), core.TCP)
+}
+
+// serveConn answers the requests on c with h until a read fails or h
+// asks to close.
+func serveConn(c net.Conn, h Handler) {
+	defer func() { _ = c.Close() }()
+	buf := make([]byte, 65536)
+	for {
+		_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+		n, err := c.Read(buf)
+		if err != nil {
+			return
+		}
+		resp, closeConn := h(append([]byte(nil), buf[:n]...))
+		if resp != nil {
+			if _, err := c.Write(resp); err != nil {
+				return
+			}
+		}
+		if closeConn {
+			return
+		}
+	}
+}
+
+// rawConn hands c to fn and closes it when fn returns.
+func rawConn(c net.Conn, fn func(c net.Conn)) {
+	defer func() { _ = c.Close() }()
+	fn(c)
 }
 
 // UDP serves h on a loopback UDP socket: each datagram is a request.

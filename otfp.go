@@ -5,9 +5,10 @@
 //
 // The library detects which industrial protocol an endpoint speaks —
 // Modbus TCP, SunSpec, IEC 61850 MMS, Siemens S7comm, OPC UA, BACnet/IP,
-// PROFINET, DNP3, IEC 60870-5-104, EtherNet/IP, OCPP, IEEE 2030.5 and
-// OpenADR — by exchanging each protocol's standard handshake or a single
-// harmless request, never by writing, controlling or changing a device's
+// PROFINET, DNP3, IEC 60870-5-104, EtherNet/IP, OCPP, IEEE 2030.5,
+// OpenADR, KNXnet/IP, MQTT, Sparkplug B, CAN (SLCAN gateways) and CANopen
+// (CiA 309-3 gateways) — by exchanging each protocol's standard handshake
+// or a single harmless request, never by writing, controlling or changing a device's
 // configuration. In identify mode it additionally issues each protocol's
 // read-only identity request (Read Device Identification, the CIP Identity
 // object, SZL, MMS Identify, the BACnet Device object, OPC UA GetEndpoints,
@@ -28,22 +29,27 @@ import (
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/protocols/bacnet"
 	"github.com/otfabric/go-otfp/protocols/can"
+	"github.com/otfabric/go-otfp/protocols/canopen"
 	"github.com/otfabric/go-otfp/protocols/dnp3"
 	"github.com/otfabric/go-otfp/protocols/enip"
 	"github.com/otfabric/go-otfp/protocols/iec104"
 	"github.com/otfabric/go-otfp/protocols/ieee2030"
+	"github.com/otfabric/go-otfp/protocols/knx"
 	"github.com/otfabric/go-otfp/protocols/mms"
 	"github.com/otfabric/go-otfp/protocols/modbus"
+	"github.com/otfabric/go-otfp/protocols/mqtt"
 	"github.com/otfabric/go-otfp/protocols/ocpp"
 	"github.com/otfabric/go-otfp/protocols/opcua"
 	"github.com/otfabric/go-otfp/protocols/openadr"
 	"github.com/otfabric/go-otfp/protocols/profinet"
 	"github.com/otfabric/go-otfp/protocols/s7"
+	"github.com/otfabric/go-otfp/protocols/sparkplugb"
 	"github.com/otfabric/go-otfp/protocols/sunspec"
 )
 
 // Fingerprinters returns a fresh instance of every built-in fingerprinter,
-// over both TCP and UDP. EtherNet/IP appears twice, once per transport.
+// over both TCP and UDP. EtherNet/IP and KNXnet/IP appear twice, once per
+// transport.
 func Fingerprinters() []core.Fingerprinter {
 	return []core.Fingerprinter{
 		// ISO-on-TCP (port 102): MMS and S7 share the port, so they run
@@ -57,16 +63,21 @@ func Fingerprinters() []core.Fingerprinter {
 		iec104.New(),
 		enip.New(),
 		opcua.New(),
+		mqtt.New(),
+		sparkplugb.New(),
+		knx.NewTCP(),
 		// UDP protocols.
 		bacnet.New(),
 		profinet.New(),
 		enip.NewUDP(),
+		knx.New(),
 		// Web-based energy protocols.
 		ocpp.New(),
 		ieee2030.New(),
 		openadr.New(),
 		// Niche gateways.
 		can.New(),
+		canopen.New(),
 	}
 }
 

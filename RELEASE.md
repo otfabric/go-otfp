@@ -3,6 +3,45 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## v0.3.0
+
+**Date:** 2026-11-05
+**Previous release:** v0.2.2
+
+### Added
+
+- **KNXnet/IP** (`knx`, UDP and TCP 3671): DESCRIPTION_REQUEST with a route-back HPAI; identity from the description (friendly name, medium, individual address, serial, MAC, service families, Secure/Tunnelling v2/Routing variant). Validated against calimero-server and knxd.
+- **MQTT** (`mqtt`, TCP/TLS 1883/8883): 3.1.1 CONNECT/CONNACK and PINGREQ, MQTT 5 retry on the standard ports; identify reads the MQTT 5 CONNACK properties and, when read-only probes are allowed, `$SYS/broker/version`. Validated against Mosquitto and HiveMQ CE.
+- **Sparkplug B** (`sparkplugb`, read-only, refines MQTT): QoS 0 subscriptions to STATE and `spBv1.0` topics for a bounded window; reports host applications, groups, edge nodes, devices and NBIRTH metrics. Never publishes. Validated against Sparkplug host and edge references on both brokers.
+- **CANopen** (`canopen`, CiA 309-3 ASCII gateways over TCP): `info version` with an echoed sequence number; identify reads the node's 0x1018/0x1000/0x1008/0x100A over SDO when read-only probes are allowed (`canopen.Config.Node`). Validated against CANopenNode canopend.
+- `core.ProtocolKNX`, `ProtocolMQTT`, `ProtocolSparkplugB` and `ProtocolCANopen` (values 15 to 18).
+- Interop suite: KNX, MQTT, Sparkplug B and CANopen adapters (CANopen needs a Linux Docker host with vcan); images pinned to the latest interop releases.
+
+### Fixed
+
+- An echo of the probe was taken for the protocol: Modbus (certain), EtherNet/IP, OPC UA, PROFINET and DNP3. EtherNet/IP was certain without the echoed sender context.
+- UDP: one spoofed, empty, oversized or foreign datagram before the answer made BACnet, PROFINET, EtherNet/IP and KNX report no match. The exchange now waits for the real answer; a UDP service of another protocol costs one retransmission window.
+- Windows: refused connections were never reported as refused (so `StopOnRefused` never fired), and oversized or ICMP-reset UDP reads aborted the exchange.
+- OpenADR 2.0b: the registration POST did not send its body, so VTNs that read it were not detected.
+- IEEE 2030.5: an endless or 16 MiB handshake flight was not bounded; a CCM_8 flight cut before ServerHelloDone scored high. ClientHello lengths wrapped for server names of 64 KiB or more; SNI is now sent only for host names of 1 to 253 octets.
+- BACnet: an I-Am vendor ID wider than 32 bits was truncated.
+- DNP3: `Frame` wrapped its length past 250 octets of user data (it now panics, as for any frame the probes cannot build).
+- MMS: a calling or called TSEL over 241 octets in total produced a malformed COTP CR (Detect now returns a DetectError before dialling); BER lengths of 64 KiB or more were encoded wrongly.
+- SunSpec: identify with base 0xFFFE wrapped to register 0; a cancellation between reads was reported as a clean no match.
+- CAN: a version reply cut before its terminator scored high.
+- IEC 104: `Framer(nil)` panicked.
+- DNP3: identify against a peer that drips frames could take up to 32 timeouts; it is now bounded at 3 × the timeout, keeps what it read and says it was cut short.
+- SunSpec and Sparkplug B: a direct `Detect` call with passive-only options (the zero `core.Options`) read registers or subscribed; they now send nothing unless read-only probes are allowed (the engine already skipped them).
+
+### Changed
+
+- **Go 1.26 or later** (CI: Go 1.26 and 1.27); `go fix` applied.
+- The one TLS configuration that does not verify certificates is `internal/tlsx` (TLS 1.2 minimum, as before). SAST (gosec, opengrep) 60 findings to 1, which is that configuration, recorded as accepted risk.
+- New chaos (`internal/chaos`), hostile-peer and safety-contract tests in every protocol package and in `e2e/`.
+- The bundled command-line tools are built on v0.2.2.
+
+---
+
 ## v0.2.2
 
 **Date:** 2026-10-31

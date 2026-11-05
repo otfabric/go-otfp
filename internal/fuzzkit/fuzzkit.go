@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"strconv"
 	"sync"
@@ -48,12 +49,13 @@ func Split(data []byte) [][]byte {
 func Join(replies ...[]byte) []byte {
 	var out []byte
 	for i, r := range replies {
-		if i == len(replies)-1 || len(r) > 255 {
+		n := len(r)
+		if i == len(replies)-1 || n > 255 {
 			out = append(out, 255)
 			out = append(out, r...)
 			continue
 		}
-		out = append(out, byte(len(r)))
+		out = append(out, byte(n))
 		out = append(out, r...)
 	}
 	return out
@@ -80,20 +82,28 @@ func Detect(t *testing.T, fp core.Fingerprinter, data []byte) {
 // Check fails t when r and err break the Fingerprinter contract.
 func Check(t *testing.T, p core.Protocol, r core.Result, err error) {
 	t.Helper()
+	if msg := Violation(p, r, err); msg != "" {
+		t.Fatal(msg)
+	}
+}
+
+// Violation describes how r and err break the Fingerprinter contract, or
+// returns "" when they keep it. Unlike Check it is safe in goroutines.
+func Violation(p core.Protocol, r core.Result, err error) string {
 	if r.Protocol != p && r.Protocol != core.ProtocolUnknown {
-		t.Fatalf("result protocol %s, want %s", r.Protocol, p)
+		return fmt.Sprintf("result protocol %s, want %s", r.Protocol, p)
 	}
 	if !r.Confidence.Valid() {
-		t.Fatalf("confidence %v out of range", r.Confidence)
+		return fmt.Sprintf("confidence %v out of range", r.Confidence)
 	}
 	if r.Matched != (r.Confidence >= core.MatchThreshold) {
-		t.Fatalf("matched=%v with confidence %.2f (threshold %.2f)", r.Matched, r.Confidence, core.MatchThreshold)
+		return fmt.Sprintf("matched=%v with confidence %.2f (threshold %.2f)", r.Matched, r.Confidence, core.MatchThreshold)
 	}
 	if err != nil && r.Matched {
-		t.Fatalf("matched result with error %v", err)
+		return fmt.Sprintf("matched result with error %v", err)
 	}
 	if err != nil && errors.Is(err, context.Canceled) {
-		t.Fatalf("cancellation without a cancelled context: %v", err)
+		return fmt.Sprintf("cancellation without a cancelled context: %v", err)
 	}
 	// An error means "could not decide" and is always a typed transport
 	// error. A reply that is merely not this protocol (garbage, a close, a
@@ -103,7 +113,7 @@ func Check(t *testing.T, p core.Protocol, r core.Result, err error) {
 		var ce *core.ConnectionError
 		var de *core.DetectError
 		if !errors.As(err, &te) && !errors.As(err, &ce) && !errors.As(err, &de) {
-			t.Fatalf("error %T %q is not a transport error: a wrong reply must be a NoMatch", err, err)
+			return fmt.Sprintf("error %T %q is not a transport error: a wrong reply must be a NoMatch", err, err)
 		}
 	}
 	strs := append([]string{r.Variant, r.Details}, r.Evidence...)
@@ -111,7 +121,7 @@ func Check(t *testing.T, p core.Protocol, r core.Result, err error) {
 		strs = append(strs, id.Vendor, id.VendorID, id.Product, id.Model, id.Version, id.Serial, id.Name)
 		for k, v := range id.Attributes {
 			if v == "" {
-				t.Fatalf("empty identity attribute %q", k)
+				return fmt.Sprintf("empty identity attribute %q", k)
 			}
 			strs = append(strs, k, v)
 		}
@@ -124,12 +134,13 @@ func Check(t *testing.T, p core.Protocol, r core.Result, err error) {
 	}
 	for _, s := range strs {
 		if !utf8.ValidString(s) {
-			t.Fatalf("invalid UTF-8 in result: %q", s)
+			return fmt.Sprintf("invalid UTF-8 in result: %q", s)
 		}
 	}
 	if _, err := json.Marshal(r); err != nil {
-		t.Fatalf("result does not marshal: %v", err)
+		return fmt.Sprintf("result does not marshal: %v", err)
 	}
+	return ""
 }
 
 // serve answers successive requests with the replies, then closes (TCP) or
@@ -166,9 +177,7 @@ func serve(t *testing.T, n core.Network, replies [][]byte) core.Target {
 	t.Cleanup(func() { _ = ln.Close(); wg.Wait() })
 	var mu sync.Mutex
 	next := 0 // replies are shared across connections, in order
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
@@ -202,7 +211,7 @@ func serve(t *testing.T, n core.Network, replies [][]byte) core.Target {
 				}
 			}()
 		}
-	}()
+	})
 	return target(ln.Addr(), n)
 }
 

@@ -128,6 +128,9 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 // nothing, for versionless firmware) followed by printable hexadecimal
 // characters and a terminating CR, and returns the field.
 func slcanField(resp []byte, cmd byte) (string, bool) {
+	if n := len(resp); n == 0 || (resp[n-1] != cr && resp[n-1] != bell) {
+		return "", false // unterminated: cut short, not a whole SLCAN reply
+	}
 	line := trimTerminator(resp)
 	if len(line) == 0 {
 		return "", false

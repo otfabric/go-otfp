@@ -26,6 +26,7 @@ package ieee2030
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -33,6 +34,7 @@ import (
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/fpx"
 	"github.com/otfabric/go-otfp/internal/httpx"
+	"github.com/otfabric/go-otfp/internal/tlsx"
 	"github.com/otfabric/go-otfp/internal/wire"
 )
 
@@ -80,6 +82,10 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	if err != nil && wire.IsTransport(err) && fl.suite == 0 {
 		return b.Result("ieee2030.tls", "no TLS response", nil).WithExchanges(trace), err
 	}
+	if errors.Is(err, errFlightTooLong) {
+		b.Evidence(err.Error())
+		return b.Result("ieee2030.tls", "not a TLS server flight", nil).WithExchanges(trace), nil
+	}
 	f.scoreFlight(b, fl)
 
 	// 2. When the server chose a suite crypto/tls implements, finish a
@@ -101,9 +107,14 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 // scoreFlight scores the shape of the server's TLS flight.
 func (f *Fingerprinter) scoreFlight(b *fpx.Builder, fl flight) {
 	switch {
-	case fl.suite == suiteCCM8:
+	case fl.suite == suiteCCM8 && fl.done:
 		b.Score(core.ConfidenceHigh, "server selected TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8, the IEEE 2030.5 cipher suite")
 		b.Sig("tls", "ccm8")
+	case fl.suite == suiteCCM8:
+		// The ServerHello is whole, the flight is not: a cut or hostile
+		// stream is not a server whose handshake we have seen.
+		b.Score(core.ConfidenceMedium, "server selected TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8, but the flight ended before ServerHelloDone")
+		b.Sig("tls", "ccm8-partial")
 	case fl.certRequested && fl.certECDSA:
 		b.Score(core.ConfidenceHigh, "mutual-TLS server with an ECDSA certificate (IEEE 2030.5 shape)")
 		b.Sig("tls", "mtls-ecdsa")
@@ -131,6 +142,19 @@ func (f *Fingerprinter) scoreFlight(b *fpx.Builder, fl flight) {
 	}
 }
 
+// dcapConfig is the fingerprinting TLS configuration (see tlsx) that
+// presents no client certificate.
+func dcapConfig(serverName string) *tls.Config {
+	cfg := tlsx.Fingerprint()
+	cfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		return &tls.Certificate{}, nil // present no certificate
+	}
+	if net.ParseIP(serverName) == nil {
+		cfg.ServerName = serverName
+	}
+	return cfg
+}
+
 // readDcap completes a crypto/tls handshake without a client certificate
 // and reads /dcap; it returns the trace.
 func (f *Fingerprinter) readDcap(ctx context.Context, b *fpx.Builder, target core.Target, serverName string, certRequested bool, opts core.Options) []core.Exchange {
@@ -140,17 +164,7 @@ func (f *Fingerprinter) readDcap(ctx context.Context, b *fpx.Builder, target cor
 		return nil
 	}
 	defer conn.Close() //nolint:errcheck
-	cfg := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: true, //nolint:gosec // fingerprinting identifies, it does not trust
-		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			return &tls.Certificate{}, nil // present no certificate
-		},
-	}
-	if net.ParseIP(serverName) == nil {
-		cfg.ServerName = serverName
-	}
-	tc := tls.Client(conn, cfg)
+	tc := tls.Client(conn, dcapConfig(serverName))
 	hctx, cancel := context.WithTimeout(ctx, target.EffectiveTimeout())
 	err = tc.HandshakeContext(hctx)
 	cancel()
@@ -178,8 +192,8 @@ func (f *Fingerprinter) readDcap(ctx context.Context, b *fpx.Builder, target cor
 }
 
 func parseDcap(b *fpx.Builder, body string) {
-	if i := strings.Index(body, "pollRate=\""); i >= 0 {
-		rest := body[i+len("pollRate=\""):]
+	if _, after, ok := strings.Cut(body, "pollRate=\""); ok {
+		rest := after
 		if j := strings.IndexByte(rest, '"'); j > 0 {
 			b.Identity().Set("pollRate", rest[:j])
 		}

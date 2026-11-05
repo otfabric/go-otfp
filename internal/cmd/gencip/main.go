@@ -44,11 +44,17 @@ func run(src, out string) error {
 			return err
 		}
 	}
-	catalog, err := os.ReadFile(filepath.Join(src, "cip", "catalog_gen.go"))
+	// Read only below the go-ethernetip checkout.
+	root, err := os.OpenRoot(src)
 	if err != nil {
 		return err
 	}
-	codes, _ := os.ReadFile(filepath.Join(src, "cip", "codes.go"))
+	defer func() { _ = root.Close() }()
+	catalog, err := root.ReadFile(filepath.Join("cip", "catalog_gen.go"))
+	if err != nil {
+		return err
+	}
+	codes, _ := root.ReadFile(filepath.Join("cip", "codes.go"))
 	devs := deviceTypes(string(catalog))
 	vendors := vendorEntries(string(catalog) + string(codes))
 	if len(devs) == 0 || len(vendors) == 0 {
@@ -58,7 +64,7 @@ func run(src, out string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(out, code, 0o644)
+	return os.WriteFile(out, code, 0o600)
 }
 
 func locate() (string, error) {

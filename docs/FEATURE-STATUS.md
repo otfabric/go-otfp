@@ -1,6 +1,6 @@
 # Support and feature matrix
 
-What go-otfp fingerprints, and against what each fingerprinter has been run. Status: v0.2.0. How each one works: [FINGERPRINTS.md](../FINGERPRINTS.md). Limits: [LIMITATIONS.md](../LIMITATIONS.md).
+What go-otfp fingerprints, and against what each fingerprinter has been run. Status: v0.3.0. How each one works: [FINGERPRINTS.md](../FINGERPRINTS.md). Limits: [LIMITATIONS.md](../LIMITATIONS.md).
 
 None of this is a conformance claim: nothing is certified, a match says how a peer answered and not what it is, and no fingerprinter has been recorded against physical devices.
 
@@ -8,7 +8,8 @@ None of this is a conformance claim: nothing is certified, a match says how a pe
 
 | go-otfp | Go | Supported |
 |---|---|---|
-| **v0.2.0** | 1.23 or later (CI: 1.23 to 1.26) | **yes** |
+| **v0.3.0** | 1.26 or later (CI: 1.26 and 1.27) | **yes** |
+| v0.2.x | 1.23 or later (CI: 1.23 to 1.26) | no |
 
 ## 2. Platforms
 
@@ -34,5 +35,11 @@ The library has no dependencies. CI tests on Linux amd64. Linux arm64 and arm, m
 | IEEE 2030.5 | `ieee2030.5` | TCP, TLS | — | GridAPPS-D, Envoy ¹ |
 | OpenADR | `openadr` | TCP | — | OpenLEADR |
 | CAN over TCP | `can` | TCP | ✅ | — |
+| CANopen (CiA 309-3 gateway) | `canopen` | TCP; identify read-only | — | CANopenNode canopend ² |
+| KNXnet/IP | `knx` | UDP and TCP | — | calimero-server |
+| MQTT | `mqtt` | TCP, TLS | — | Mosquitto, HiveMQ CE |
+| Sparkplug B | `sparkplugb` | TCP, TLS, read-only, refines MQTT | — | sparkplughost + srad on Mosquitto and HiveMQ CE |
+
+² Needs a Docker host with the vcan kernel module (Linux); skipped on Docker Desktop.
 
 ¹ Skipped unless the sibling `*-interop` repository, with its fixtures or PKI, is checked out beside go-otfp.

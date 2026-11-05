@@ -98,8 +98,7 @@ func TestNotIEC104(t *testing.T) {
 	silent := testsrv.TCP(t, testsrv.Script())
 	silent.Timeout = 200 * time.Millisecond
 	_, err = New().Detect(context.Background(), silent, core.Options{})
-	var te *core.TimeoutError
-	if !errors.As(err, &te) {
+	if _, ok := errors.AsType[*core.TimeoutError](err); !ok {
 		t.Fatalf("silent: %v", err)
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"net"
 	"strconv"
 	"time"
+
+	"github.com/otfabric/go-otfp/internal/tlsx"
 )
 
 // DefaultTimeout is the per-operation timeout used when Target.Timeout is
@@ -38,8 +40,9 @@ type Target struct {
 	// themselves (IEEE 2030.5) start from a clone of it.
 	TLS *tls.Config
 
-	// Path, when set, overrides the HTTP or WebSocket path the web-based
-	// fingerprinters (OCPP, IEEE 2030.5, OpenADR) try first.
+	// Path, when set, overrides the WebSocket path OCPP tries first. The
+	// IEEE 2030.5 and OpenADR fingerprinters probe their standard paths and
+	// ignore it.
 	Path string
 }
 
@@ -101,7 +104,7 @@ func ParseTarget(s string) (Target, error) {
 		case "udp":
 			t.Network = UDP
 		case "tls", "tcp+tls":
-			t.TLS = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // fingerprinting identifies, it does not trust
+			t.TLS = tlsx.Fingerprint()
 		default:
 			return Target{}, fmt.Errorf("unknown scheme %q (want tcp, udp or tls)", s[:i])
 		}

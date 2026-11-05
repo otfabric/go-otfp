@@ -28,7 +28,11 @@ const (
 	ProtocolOCPP       Protocol = 12
 	ProtocolIEEE2030_5 Protocol = 13 //nolint:revive // the standard's name
 	ProtocolOpenADR    Protocol = 14
-	protocolCount      Protocol = 15 // unexported sentinel
+	ProtocolKNX        Protocol = 15
+	ProtocolMQTT       Protocol = 16
+	ProtocolSparkplugB Protocol = 17
+	ProtocolCANopen    Protocol = 18
+	protocolCount      Protocol = 19 // unexported sentinel
 )
 
 type protocolInfo struct {
@@ -52,6 +56,10 @@ var protocolTable = [protocolCount]protocolInfo{
 	ProtocolOCPP:       {"ocpp", "OCPP"},
 	ProtocolIEEE2030_5: {"ieee2030.5", "IEEE 2030.5"},
 	ProtocolOpenADR:    {"openadr", "OpenADR"},
+	ProtocolKNX:        {"knx", "KNXnet/IP"},
+	ProtocolMQTT:       {"mqtt", "MQTT"},
+	ProtocolSparkplugB: {"sparkplugb", "Sparkplug B"},
+	ProtocolCANopen:    {"canopen", "CANopen (CiA 309-3 gateway)"},
 }
 
 // String returns the human-readable protocol name, e.g. "Modbus TCP".

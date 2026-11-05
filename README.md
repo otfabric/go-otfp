@@ -1,6 +1,6 @@
 # go-otfp — OT protocol fingerprinting
 
-[![Go](https://img.shields.io/badge/Go-1.23%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![Go Reference](https://pkg.go.dev/badge/github.com/otfabric/go-otfp.svg)](https://pkg.go.dev/github.com/otfabric/go-otfp)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![CI](https://github.com/otfabric/go-otfp/actions/workflows/ci.yml/badge.svg)](https://github.com/otfabric/go-otfp/actions/workflows/ci.yml)
@@ -37,6 +37,10 @@ model, version and serial the device returns.
 | **IEEE 2030.5** | TCP (TLS) | 443 | mutual-TLS / ECDSA / CCM_8 shape, GET /dcap | server certificate, poll rate |
 | **OpenADR** (3 / 2.0b) | TCP | 8080/443 | GET /auth/server, /programs; oadrQueryRegistration | OAuth2 token URL |
 | **CAN** (TCP gateway) | TCP | gateway-specific | SLCAN `V`/`N` commands | firmware version, serial |
+| **CANopen** (CiA 309-3 gateway) | TCP | 60000 (CANopenNode) | `info version` with an echoed sequence number | gateway version record; node vendor-ID, product code, revision, serial, device type, name, software version (SDO, read-only) |
+| **KNXnet/IP** | UDP + TCP | 3671 | DESCRIPTION_REQUEST (route-back HPAI) | friendly name, medium, individual address, serial, MAC, service families, Secure/Tunnelling v2 |
+| **MQTT** (3.1.1 / 5) | TCP (TLS) | 1883/8883 | CONNECT/CONNACK, PINGREQ, DISCONNECT | protocol version, CONNACK properties, `$SYS/broker/version` |
+| **Sparkplug B** | TCP (TLS) | 1883/8883 | QoS 0 SUBSCRIBE to STATE and spBv1.0 topics, bounded window (refines MQTT) | host applications, groups, edge nodes, devices, NBIRTH bdSeq/metrics |
 
 Detection is **port-agnostic**: the engine tries the fingerprinters of the
 target's port first, then the rest, so a protocol on a non-standard port is
@@ -178,6 +182,7 @@ go-otfp/
 │   ├── mbap/          Modbus MBAP framing (shared by Modbus and SunSpec)
 │   ├── httpx/         minimal HTTP/1.1 over a session (web protocols)
 │   ├── fpx/           evidence/identity/fingerprint scoring helper
+│   ├── tlsx/          the one non-verifying TLS client configuration
 │   ├── testsrv/       scripted loopback servers for tests
 │   └── cmd/gencip/    generator for the EtherNet/IP CIP catalogue
 ├── protocols/         one package per protocol (see the table above)

@@ -27,7 +27,7 @@ func main() {
 		for _, p := range os.Args[2:] {
 			port, err := strconv.Atoi(p)
 			if err != nil {
-				log.Fatalf("port %q: %v", p, err)
+				log.Fatalf("port %s is not a number", strconv.Quote(p))
 			}
 			targets = append(targets, core.Target{Host: os.Args[1], Port: port})
 		}

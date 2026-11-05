@@ -50,6 +50,20 @@ type adapter struct {
 	// the container (for images that do not bake them). The adapter is
 	// skipped when the sibling repo is not checked out beside go-otfp.
 	mountRepo, mountAt string
+	// mountLocal mounts a directory of this suite (relative to interop/)
+	// at mountAt, for third-party images that need a config file.
+	mountLocal string
+	// ready, when set, is the log substring that marks the server ready,
+	// for images without the otfabric JSON ready event.
+	ready string
+	// peers run beside the server on a private Docker network (Sparkplug B:
+	// a host application and an edge node on the broker). "{server}" in a
+	// peer's cmd is replaced by the server container's name.
+	peers []peer
+	// trigger, when set, is run with docker exec in the last peer every
+	// 300 ms during the scan (an edge node's publish-data, so that node and
+	// device messages arrive within the listening window).
+	trigger []string
 	// path overrides the HTTP/WebSocket path (OCPP needs a known station id).
 	path string
 	// pki, when set, generates the IEEE 2030.5 throwaway PKI with the
@@ -57,53 +71,83 @@ type adapter struct {
 	pki bool
 }
 
+// peer is a container started after the server, on its network, and
+// ready when readyFile exists in it (the sparkplugb-interop contract).
+type peer struct {
+	image     string
+	cmd       []string
+	readyFile string
+}
+
+// The MQTT brokers and Sparkplug B references, pinned as go-sparkplugb's
+// interop harness pins them (brokers) and at sparkplugb-interop v0.3.1.
+const (
+	mosquittoImage     = "docker.io/library/eclipse-mosquitto:2.1.2-alpine@sha256:860aeb5d63ce509508f6dcfb2bc8a1c1dd2bc60555b562b45ce90e52d8dabb0f"
+	hivemqImage        = "docker.io/hivemq/hivemq-ce:2026.5@sha256:bac6d4d1d815bffe4bc9a7fca8d06ea12b32d34f84ef2f1851ff4548560ee67b"
+	sparkplugHostImage = "ghcr.io/otfabric/sparkplugb-interop-sparkplughost:v0.3.1@sha256:db31b9f5ab2310a7bf12b298d52e00502abb7a6165b08f94663e186c700828da"
+	sradImage          = "ghcr.io/otfabric/sparkplugb-interop-srad:v0.3.1@sha256:2a32b081db9e209b67ff90b1604b80e623eeb5dd783a71151e45864bed493ae0"
+)
+
+// sparkplugPeers: a primary host application (its STATE is retained) and
+// an edge node (srad: births on connect, publishes data on demand).
+var sparkplugPeers = []peer{
+	{image: env("OTFP_SPARKPLUGB_HOST_IMAGE", sparkplugHostImage), readyFile: "/run/sparkplugb-interop/ready",
+		cmd: []string{"host", "--broker", "tcp://{server}:1883", "--host-id", "otfp-host"}},
+	{image: env("OTFP_SPARKPLUGB_EDGE_IMAGE", sradImage), readyFile: "/run/sparkplugb-interop/ready",
+		cmd: []string{"edge", "--broker", "tcp://{server}:1883", "--edge-node", "otfp-edge"}},
+}
+
+// sparkplugTrigger asks the edge, through its control socket, to publish
+// data (the container contract's call; not an MQTT publish by otfp).
+var sparkplugTrigger = []string{"sparkplugb-interop", "call", "publish-data", "--payload", `{"update": 0}`}
+
 // adapters are pinned to otfabric interop releases; see each go-<protocol>
 // library's interop harness for the source of the digests.
 var adapters = []adapter{
 	{
 		name: "modbus-pymodbus", proto: core.ProtocolModbus, port: 1502,
-		image:    env("OTFP_MODBUS_IMAGE", "ghcr.io/otfabric/modbus-interop-pymodbus@sha256:33b703491abc2f15c229ff433ffbb79eb00e86a8c56c30fb7799c8ed13832f5a"),
+		image:    env("OTFP_MODBUS_IMAGE", "ghcr.io/otfabric/modbus-interop-pymodbus@sha256:dbd305a7789a0f1469d403a163ce463297cda77066bf4b1a14d7604031361e3b"),
 		cmd:      []string{"server", "--fixture", "/fixtures/baseline/fixture.json"},
 		identity: "otfabric",
 	},
 	{
 		name: "dnp3-opendnp3", proto: core.ProtocolDNP3, port: 20000,
-		image: env("OTFP_DNP3_IMAGE", "ghcr.io/otfabric/dnp3-interop-opendnp3@sha256:abc0d87ef30aceff748cc513f1e5840618ea9a78cc8a4713ba67d06507089314"),
+		image: env("OTFP_DNP3_IMAGE", "ghcr.io/otfabric/dnp3-interop-opendnp3@sha256:76a2baa2da118e049196d2b7310f84cc79b38ddf0443a40e410e4553f4773203"),
 		cmd:   []string{"server", "--fixture", "/fixtures/baseline/fixture.json"},
 	},
 	{
 		name: "iec104-lib60870", proto: core.ProtocolIEC104, port: 2404,
-		image: env("OTFP_IEC104_IMAGE", "ghcr.io/otfabric/iec104-interop-lib60870@sha256:c2f6df54d5b0bdda0411db7ad601b77e320d8d628e6988cd1c7d507f4e56ba72"),
+		image: env("OTFP_IEC104_IMAGE", "ghcr.io/otfabric/iec104-interop-lib60870@sha256:c1f0cc95e39316df8c182b887b933e0488c92845fedade00605aedc816a0af9a"),
 		cmd:   []string{"server", "--fixture", "/fixtures/baseline/fixture.json"},
 	},
 	{
 		name: "s7-snap7", proto: core.ProtocolS7, port: 102,
-		image:     env("OTFP_S7_IMAGE", "ghcr.io/otfabric/snap7-interop-native@sha256:66e3826813005bfacb8510ce5de33119315499325b35bf616dcf61de0506a342"),
+		image:     env("OTFP_S7_IMAGE", "ghcr.io/otfabric/snap7-interop-native@sha256:6b97b3233346323508c5c3caf7be3a151fa75ac017592d14919b7112efa46b88"),
 		env:       map[string]string{"SNAP_INTEROP_FIXTURE": "/fixtures/basic-db.compiled.json", "SNAP_INTEROP_LISTEN_ADDRESS": "0.0.0.0", "SNAP_INTEROP_PORT": "102", "SNAP_INTEROP_STATE_PATH": "/tmp/state.json"},
 		mountRepo: "snap7-interop/fixtures/compiled", mountAt: "/fixtures",
 	},
 	{
 		name: "opcua-open62541", proto: core.ProtocolOPCUA, port: 4840,
-		image:     env("OTFP_OPCUA_IMAGE", "ghcr.io/otfabric/opcua-interop-open62541@sha256:ff00dd63217f42c68e5233563d3d0b75290838f4d01e866fe1f9e1c730adcdbc"),
+		image:     env("OTFP_OPCUA_IMAGE", "ghcr.io/otfabric/opcua-interop-open62541@sha256:6e87e0a33ed42450b923eb5576f5e3b730c3c3cdd1c489ea7da9f197631a2441"),
 		cmd:       []string{"server", "--fixture", "/fixtures/baseline/fixture.json", "--bind-address", "0.0.0.0", "--bind-port", "4840"},
 		identity:  "OTFabric OPC UA Compatibility Server", // GetEndpoints decoded
 		mountRepo: "opcua-interop/fixtures", mountAt: "/fixtures",
 	},
 	{
 		name: "enip-opener", proto: core.ProtocolENIP, port: 44818,
-		image:    env("OTFP_ENIP_IMAGE", "ghcr.io/otfabric/ethernetip-interop-opener@sha256:bf7c3d9078cef6299c90c12a8460437fdd85a041ef2e227133609c3ad0a45526"),
+		image:    env("OTFP_ENIP_IMAGE", "ghcr.io/otfabric/ethernetip-interop-opener@sha256:6dc59b7b846398575e1dabf57ed62d6c45ab165dc4804ae4fbe0d59e7fd4c1d2"),
 		cmd:      []string{"server"},
 		identity: "OpENer",
 	},
 	{
 		name: "bacnet-stack", proto: core.ProtocolBACnet, port: 47808, udp: true,
-		image:    env("OTFP_BACNET_IMAGE", "ghcr.io/otfabric/bacnet-interop-bacnet-stack@sha256:78d21078ea8b5444e346ca6ee23aa0b1539ee8f036d759fea1f0fdbea35c0d30"),
+		image:    env("OTFP_BACNET_IMAGE", "ghcr.io/otfabric/bacnet-interop-bacnet-stack@sha256:3a941e08fbe47cf6c7dfb2a8036b4902f824e8dd178dc7b2ff846942b72ad47a"),
 		env:      map[string]string{"FIXTURE": "device-baseline-v2"},
 		identity: "InteropDevice",
 	},
 	{
 		name: "ocpp-mobilityhouse", proto: core.ProtocolOCPP, port: 9000,
-		image:   env("OTFP_OCPP_IMAGE", "ghcr.io/otfabric/ocpp-interop-mobilityhouse@sha256:3f14958e9f21d85d3e18542bcbc9460bc8b7163a2982f4539dc7b8f78eb70fca"),
+		image:   env("OTFP_OCPP_IMAGE", "ghcr.io/otfabric/ocpp-interop-mobilityhouse@sha256:14d8da52ba062873fdc55834585dcd97b2405557004a3c438f04ee60e1bff1b5"),
 		cmd:     []string{"server", "--version", "2.0.1"},
 		variant: "OCPP",
 		path:    "/ocpp/OT-FABRIC-TEST-001", // the fixture's known station
@@ -112,22 +156,67 @@ var adapters = []adapter{
 		// GridAPPS-D offers only CCM_8, which no Go TLS client can use: the
 		// raw-hello probe still recognises it.
 		name: "ieee2030-gridappsd", proto: core.ProtocolIEEE2030_5, port: 443, pki: true,
-		image:    env("OTFP_IEEE2030_GRIDAPPSD_IMAGE", "ghcr.io/otfabric/ieee20305-interop-gridappsd@sha256:7b04e6c482df6536d15ba06e17e4c317a68031cabeed54cc03bc5b395f5b8d68"),
+		image:    env("OTFP_IEEE2030_GRIDAPPSD_IMAGE", "ghcr.io/otfabric/ieee20305-interop-gridappsd@sha256:c72fbdb7c91fae1a59ee87938cc834651db2924317dd362814dc682d57a5b3af"),
 		cmd:      []string{"server", "--version", "2018", "--tls-dir", "/tls/server"},
 		identity: "CN=gridappsd-server",
 	},
 	{
 		name: "ieee2030-envoy", proto: core.ProtocolIEEE2030_5, port: 443, pki: true,
-		image:    env("OTFP_IEEE2030_ENVOY_IMAGE", "ghcr.io/otfabric/ieee20305-interop-envoy@sha256:2dd3587071de81d7b96a7dbf65bf414a06a643a32f5d785b42ba7ebb0cb04d2d"),
+		image:    env("OTFP_IEEE2030_ENVOY_IMAGE", "ghcr.io/otfabric/ieee20305-interop-envoy@sha256:850d16d293866fbd424716df6f3fb5ebb954a87616e10b082dbe5ea16c3f1bdb"),
 		cmd:      []string{"server", "--version", "2018", "--tls-dir", "/tls/server"},
 		identity: "CN=",
 	},
 	{
 		name: "openadr-openleadr", proto: core.ProtocolOpenADR, port: 8080,
-		image:     env("OTFP_OPENADR_IMAGE", "ghcr.io/otfabric/openadr-interop-openleadr@sha256:b8221b89983a5b7cdc69cea92443e05416336ad1ddcd843250770d65950b4fb2"),
+		image:     env("OTFP_OPENADR_IMAGE", "ghcr.io/otfabric/openadr-interop-openleadr@sha256:331f178d185537743fbda4b3d5cf9d03e629f41e5b1a7f0865ec1e07e6c7b3a3"),
 		cmd:       []string{"server", "--fixture", "/fixtures/baseline/fixture.json"},
 		variant:   "OpenADR",
 		publicURL: true,
+	},
+	// KNXnet/IP: the official calimero-server image (knx-interop
+	// versions.yaml) with the knx-interop config template filled in. The
+	// knx-interop adapters themselves are not published (knxd is GPL).
+	{
+		name: "knx-calimero", proto: core.ProtocolKNX, port: 3671, udp: true,
+		image:      env("OTFP_KNX_IMAGE", "calimeroproject/knxserver:3.0-M1@sha256:70463ad74c4c976cbc8c062fc219b19059f417562051670deeaa65c5e13f7f9c"),
+		cmd:        []string{"--no-stdin", "/config/server-config.xml"},
+		mountLocal: "testdata/knx", mountAt: "/config", ready: "is up and running",
+		variant: "tunnelling-v2", identity: "otfp-calimero",
+	},
+	{
+		name: "knx-calimero-tcp", proto: core.ProtocolKNX, port: 3671,
+		image:      env("OTFP_KNX_IMAGE", "calimeroproject/knxserver:3.0-M1@sha256:70463ad74c4c976cbc8c062fc219b19059f417562051670deeaa65c5e13f7f9c"),
+		cmd:        []string{"--no-stdin", "/config/server-config.xml"},
+		mountLocal: "testdata/knx", mountAt: "/config", ready: "is up and running",
+		variant: "routing", identity: "otfp-calimero",
+	},
+	// MQTT brokers, and Sparkplug B on them with a host application and an
+	// edge node from sparkplugb-interop.
+	{
+		name: "mqtt-mosquitto", proto: core.ProtocolMQTT, port: 1883,
+		image:   env("OTFP_MQTT_MOSQUITTO_IMAGE", mosquittoImage),
+		cmd:     []string{"mosquitto", "-c", "/mosquitto-no-auth.conf"},
+		ready:   " running",
+		variant: "MQTT 5.0", identity: "mosquitto v2.1.2", // $SYS/broker/version
+	},
+	{
+		name: "mqtt-hivemq-ce", proto: core.ProtocolMQTT, port: 1883,
+		image:   env("OTFP_MQTT_HIVEMQ_IMAGE", hivemqImage),
+		ready:   "Started HiveMQ in",
+		variant: "MQTT 5.0", identity: "protocolVersion=5.0", // no $SYS: CONNACK properties
+	},
+	{
+		name: "sparkplugb-mosquitto", proto: core.ProtocolSparkplugB, port: 1883,
+		image: env("OTFP_MQTT_MOSQUITTO_IMAGE", mosquittoImage),
+		cmd:   []string{"mosquitto", "-c", "/mosquitto-no-auth.conf"}, ready: " running",
+		peers: sparkplugPeers, trigger: sparkplugTrigger,
+		variant: "Sparkplug B 3.0", identity: "devices=interop/otfp-edge/",
+	},
+	{
+		name: "sparkplugb-hivemq-ce", proto: core.ProtocolSparkplugB, port: 1883,
+		image: env("OTFP_MQTT_HIVEMQ_IMAGE", hivemqImage), ready: "Started HiveMQ in",
+		peers: sparkplugPeers, trigger: sparkplugTrigger,
+		variant: "Sparkplug B 3.0", identity: "hostApplications=otfp-host=online",
 	},
 }
 
@@ -160,7 +249,11 @@ func TestInterop(t *testing.T) {
 		}
 		t.Run(a.name, func(t *testing.T) {
 			t.Parallel()
-			host := startContainer(t, a)
+			host, server := startContainer(t, a)
+			peers := startPeers(t, a, server)
+			stop := make(chan struct{})
+			go triggerLoop(a, peers, stop)
+			defer close(stop)
 			target := core.Target{Host: "127.0.0.1", Port: host, Network: network(a), Timeout: 5 * time.Second, Path: a.path}
 
 			// Validate the adapter's own fingerprinter against its server.
@@ -169,8 +262,11 @@ func TestInterop(t *testing.T) {
 			// multi-protocol sweep cannot disturb a single-protocol
 			// reference server before its own probe runs.
 			protocols := []core.Protocol{a.proto}
-			if a.proto == core.ProtocolSunSpec {
+			switch a.proto {
+			case core.ProtocolSunSpec:
 				protocols = append(protocols, core.ProtocolModbus)
+			case core.ProtocolSparkplugB:
+				protocols = append(protocols, core.ProtocolMQTT)
 			}
 			report, err := otfp.NewEngine(core.EngineConfig{Mode: core.ModeIdentify, Protocols: protocols, MaxIntrusiveness: core.ReadOnly}).Scan(context.Background(), target)
 			if err != nil {
@@ -201,7 +297,7 @@ func network(a adapter) core.Network {
 
 // startContainer runs the adapter, maps its port to a loopback host port,
 // waits for the port to accept, and returns the host port.
-func startContainer(t *testing.T, a adapter) int {
+func startContainer(t *testing.T, a adapter) (int, string) {
 	t.Helper()
 	hostPort := freePort(t)
 	proto := "tcp"
@@ -212,12 +308,29 @@ func startContainer(t *testing.T, a adapter) int {
 	if a.proto == core.ProtocolS7 {
 		args = append(args, "--cap-add", "NET_BIND_SERVICE")
 	}
+	var server string
+	if len(a.peers) > 0 {
+		// A private network: the peers reach the server by its name.
+		server = fmt.Sprintf("otfp-%s-%d", a.name, hostPort)
+		if out, err := exec.Command("docker", "network", "create", server).CombinedOutput(); err != nil {
+			t.Fatalf("docker network create: %v\n%s", err, out)
+		}
+		t.Cleanup(func() { _ = exec.Command("docker", "network", "rm", server).Run() })
+		args = append(args, "--network", server, "--name", server)
+	}
 	if a.mountRepo != "" {
 		dir := filepath.Join("..", "..", a.mountRepo)
 		if _, err := os.Stat(dir); err != nil {
 			skipMissing(t, "sibling fixtures %s not found (checkout %s beside go-otfp)", dir, a.mountRepo)
 		}
 		abs, _ := filepath.Abs(dir)
+		args = append(args, "-v", abs+":"+a.mountAt+":ro")
+	}
+	if a.mountLocal != "" {
+		abs, err := filepath.Abs(a.mountLocal)
+		if err != nil {
+			t.Fatal(err)
+		}
 		args = append(args, "-v", abs+":"+a.mountAt+":ro")
 	}
 	if a.pki {
@@ -249,23 +362,75 @@ func startContainer(t *testing.T, a adapter) int {
 	// docker's proxy accepts connections before the server binds.
 	started := time.Now()
 	deadline := started.Add(90 * time.Second)
+	ready := `ready"`
+	if a.ready != "" {
+		ready = a.ready
+	}
 	for time.Now().Before(deadline) {
 		logs, _ := exec.Command("docker", "logs", id).CombinedOutput()
-		if strings.Contains(string(logs), `ready"`) {
+		if strings.Contains(string(logs), ready) {
 			time.Sleep(500 * time.Millisecond)
-			return hostPort
+			return hostPort, server
 		}
 		if !a.udp && time.Since(started) > 30*time.Second && portOpen(hostPort) {
 			// No ready line after a long wait, but the port answers: an
 			// image without the readiness contract. (Before that, an open
 			// port proves nothing: docker's proxy accepts at once.)
-			return hostPort
+			return hostPort, server
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	logs, _ := exec.Command("docker", "logs", id).CombinedOutput()
 	t.Fatalf("%s did not become ready\n%s", a.name, logs)
-	return 0
+	return 0, ""
+}
+
+// startPeers runs the adapter's peers on the server's network, in order,
+// each once its predecessor is ready, and returns their container IDs.
+func startPeers(t *testing.T, a adapter, server string) []string {
+	t.Helper()
+	var ids []string
+	for i, p := range a.peers {
+		args := []string{"run", "-d", "--rm", "--network", server, "--name", fmt.Sprintf("%s-peer%d", server, i), p.image}
+		for _, c := range p.cmd {
+			args = append(args, strings.ReplaceAll(c, "{server}", server))
+		}
+		var stderr strings.Builder
+		run := exec.Command("docker", args...)
+		run.Stderr = &stderr
+		out, err := run.Output()
+		if err != nil {
+			t.Fatalf("docker run peer %s: %v\n%s", p.image, err, stderr.String())
+		}
+		id := strings.TrimSpace(string(out))
+		t.Cleanup(func() { _ = exec.Command("docker", "rm", "-f", id).Run() })
+		deadline := time.Now().Add(90 * time.Second)
+		for exec.Command("docker", "exec", id, "test", "-f", p.readyFile).Run() != nil {
+			if time.Now().After(deadline) {
+				logs, _ := exec.Command("docker", "logs", id).CombinedOutput()
+				t.Fatalf("peer %s did not become ready\n%s", p.image, logs)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// triggerLoop runs a.trigger in the last peer every 300 ms until stop is
+// closed.
+func triggerLoop(a adapter, peers []string, stop <-chan struct{}) {
+	if len(a.trigger) == 0 || len(peers) == 0 {
+		return
+	}
+	for {
+		select {
+		case <-stop:
+			return
+		case <-time.After(300 * time.Millisecond):
+			_ = exec.Command("docker", append([]string{"exec", peers[len(peers)-1]}, a.trigger...)...).Run()
+		}
+	}
 }
 
 func freePort(t *testing.T) int {

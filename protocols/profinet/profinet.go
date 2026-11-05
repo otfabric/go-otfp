@@ -94,9 +94,15 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	probe := readImplicit(activity, indexIM0)
 	// Discard DCE/RPC replies for other activities (late answers, other
 	// clients); keep anything else for judging.
-	resp, err := s.RoundTripUDP("read-implicit", probe, maxUDP, func(dg []byte) bool {
+	resp, err := s.RoundTripDatagram("read-implicit", probe, maxUDP, func(dg []byte) wire.Verdict {
 		h, _, perr := parseHeader(dg)
-		return perr != nil || h.activity == activity
+		switch {
+		case perr != nil:
+			return wire.Foreign
+		case h.activity == activity:
+			return wire.Answer
+		}
+		return wire.Discard // another activity's reply
 	})
 	if err != nil {
 		if b.Confidence() == 0 {
@@ -118,6 +124,11 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	b.Meta("rpcType", rpcTypeName(h.typ))
 	b.Sig("type", rpcTypeName(h.typ))
 	switch h.typ {
+	case typeRequest:
+		// Only the probing side sends a request with our activity: the
+		// probe was echoed.
+		b.Score(core.ConfidenceLow, "DCE/RPC request with our activity UUID: the probe was echoed")
+		return b.Result("profinet.rpc", "echo, not PROFINET", s), nil
 	case typeResponse:
 		b.Score(core.ConfidenceCertain, "ReadImplicit response on the PNIO device interface")
 		if opts.Mode == core.ModeIdentify {
@@ -190,7 +201,7 @@ func readImplicit(activity uuidT, index uint16) []byte {
 	binary.LittleEndian.PutUint16(b[68:70], opReadImplicit)
 	binary.LittleEndian.PutUint16(b[70:72], 0xFFFF) // interface hint
 	binary.LittleEndian.PutUint16(b[72:74], 0xFFFF) // activity hint
-	binary.LittleEndian.PutUint16(b[74:76], uint16(len(body)))
+	binary.LittleEndian.PutUint16(b[74:76], wire.Len16(len(body)))
 	binary.LittleEndian.PutUint16(b[76:78], 0) // fragment number
 	b[78] = 0                                  // auth protocol
 	b[79] = 0                                  // serial low
@@ -200,10 +211,10 @@ func readImplicit(activity uuidT, index uint16) []byte {
 func appendNDRRequest(b, blocks []byte) []byte {
 	const argsMax = 16696
 	b = binary.LittleEndian.AppendUint32(b, argsMax)
-	b = binary.LittleEndian.AppendUint32(b, uint32(len(blocks)))
+	b = binary.LittleEndian.AppendUint32(b, wire.Len32(len(blocks)))
 	b = binary.LittleEndian.AppendUint32(b, argsMax)
 	b = binary.LittleEndian.AppendUint32(b, 0)
-	b = binary.LittleEndian.AppendUint32(b, uint32(len(blocks)))
+	b = binary.LittleEndian.AppendUint32(b, wire.Len32(len(blocks)))
 	return append(b, blocks...)
 }
 
@@ -220,11 +231,11 @@ func readReqBlock(index uint16) []byte {
 	b = append(b, 0x00, 0x00)             // slot
 	b = append(b, 0x00, 0x01)             // subslot
 	b = append(b, 0x00, 0x00)             // padding
-	b = append(b, byte(index>>8), byte(index))
+	b = binary.BigEndian.AppendUint16(b, index)
 	b = append(b, 0x00, 0x00, 0x10, 0x00) // record data length (4096)
 	b = append(b, make([]byte, 16)...)    // target ARUUID (nil)
 	b = append(b, make([]byte, 8)...)     // reserved
-	binary.BigEndian.PutUint16(b[2:], uint16(len(b)-4))
+	binary.BigEndian.PutUint16(b[2:], wire.Len16(len(b)-4))
 	return b
 }
 
@@ -262,10 +273,10 @@ func ndrBlocks(body []byte) ([]byte, error) {
 	}
 	actual := binary.LittleEndian.Uint32(body[16:])
 	rest := body[ndrHeaderLen:]
-	if int64(actual) > int64(len(rest)) {
-		actual = uint32(len(rest))
+	if int64(actual) < int64(len(rest)) {
+		rest = rest[:actual]
 	}
-	return rest[:actual], nil
+	return rest, nil
 }
 
 type im0 struct {

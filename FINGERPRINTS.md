@@ -25,6 +25,18 @@ fires at `ConfidenceHigh` by default.
 Each result also carries the list of checks that passed (`Evidence`) and a
 stable `Fingerprint` signature for inventories and SIEMs.
 
+Two rules hold for every fingerprinter:
+
+- **An echo is not a protocol.** A reply that is our own request sent back
+  (a TCP or UDP echo service, a loopback) never matches: it scores at most
+  Low, even where the request's framing would otherwise pass every check.
+- **A foreign datagram is not the answer.** Over UDP a datagram that is not
+  an answer to our request (another protocol, a spoofed or empty datagram,
+  an oversized one) is set aside and the exchange keeps waiting for the
+  real answer until its retransmission window ends; only then is the
+  foreign datagram judged. A UDP service of another protocol therefore
+  costs one window before no match.
+
 ## Detection vs. identification
 
 - **Detect** (`ModeDetect`) sends the minimal exchange that tells whether the
@@ -40,7 +52,9 @@ can exclude the noisier ones:
 - **ReadOnly** — also reads application data (SunSpec's holding-register
   marker). Skipped unless the scan allows read-only probes. A passive
   fingerprinter may still take an optional read-only step only when the scan
-  allows it: Modbus's FC 03 fallback, OpenADR's 2.0b registration POST.
+  allows it: Modbus's FC 03 fallback, OpenADR's 2.0b registration POST,
+  CANopen's SDO identity reads. A read-only fingerprinter (SunSpec, Sparkplug
+  B) called directly with passive-only options sends nothing.
 
 ## Per-protocol
 
@@ -75,8 +89,9 @@ COTP CR (transport selector 0x0001), then an ISO 8327 session CONNECT, an ISO
 8823 presentation CP, an ACSE AARQ for the MMS application context
 (1.0.9506.2.3) and an MMS Initiate-Request. An Initiate-Response is
 **certain**; an ACSE/MMS-level rejection is still **high** (an MMS stack).
-Identify calls the MMS Identify service (vendor, model, revision) and
-concludes the association. The probe bytes match those the `go-mms` client
+Identify calls the MMS Identify service (vendor, model, revision). In both
+modes the association is concluded (MMS Conclude) before the connection is
+closed. The probe bytes match those the `go-mms` client
 sends.
 
 ### Siemens S7comm / S7comm-plus (`s7comm`, TCP, passive)
@@ -107,9 +122,12 @@ Sends ListIdentity (command 0x0063), which needs no session and which every
 EtherNet/IP target answers with its CIP Identity object. Over UDP it is a
 single datagram; over TCP the encapsulation header is validated. The command
 echo, a success status and the echoed sender context make a match **certain**
-and yield vendor (named from the ODVA list), device type, product code,
+(without the echoed context it is **high**; a byte-identical echo of the
+request never matches) and yield vendor (named from the ODVA list), device type, product code,
 revision, serial and product name. The ODVA vendor and device-type tables are
-generated from `go-ethernetip` (see `internal/cmd/gencip`).
+generated from `go-ethernetip` (see `internal/cmd/gencip`). In identify mode
+over TCP a RegisterSession precedes ListIdentity; no other CIP service is
+sent.
 
 ### BACnet/IP (`bacnet`, UDP, passive)
 
@@ -199,10 +217,99 @@ TLS target for an `https://` VTN.
 Targets SLCAN (Lawicel) ASCII gateways that expose a CAN bus over a TCP
 socket. Sends the version command (`V\r`) and, when needed, the serial
 command (`N\r`), and accepts only a strict SLCAN reply: the command's echo
-letter, a fixed-width hexadecimal field and a carriage return. ASCII banners
+letter (some gateways omit it), a hexadecimal field of two to eight digits and
+a carriage return (or BEL for an error); a reply cut before its terminator
+does not match. ASCII banners
 of HTTP, SSH, SMTP and line protocols are rejected, and bare acknowledgements
 alone are too weak to confirm. Identify records the firmware version and
 serial number.
+
+### CANopen CiA 309-3 gateway (`canopen`, TCP, passive; identify read-only)
+
+Targets CANopen gateways that expose the CiA 309-3 ASCII command interface
+over TCP (CANopenNode's canopend `-c tcp-<port>`, CANopen-Ethernet
+gateways). Sends the gateway management service `[<seq>] info version` with
+a random sequence number, preceded by a line feed that closes a partial
+command an earlier client may have left in the gateway's buffer. The
+gateway answers it itself, without CAN traffic: a strict 309-3 response
+line echoing the sequence number — `ERROR:<100..999>`, an SDO abort
+`ERROR:0xhhhhhhhh` (CANopenNode answers `ERROR:100`, request not supported)
+or `OK` — is **high**; a parsed version record (vendor-ID, product code,
+revision, serial, gateway class, protocol version, implementation class) is
+**certain**. Responses to other sequence numbers are skipped (bounded) and
+alone are only a hint; echoes of the probe, non-ASCII bytes, over-long lines
+and banners of HTTP, SSH, SMTP and other text services are rejected.
+Identify, only when the scan allows read-only probes, reads one node's
+identity through the gateway's SDO client — 0x1018 sub 1..4, 0x1000,
+0x1008 and 0x100A — from the gateway's default node, or the node set with
+`canopen.Config.Node`. These are SDO uploads on the CAN bus; nothing is
+written and no gateway setting is changed.
+
+### KNXnet/IP (`knx`, UDP and TCP, passive)
+
+Sends one DESCRIPTION_REQUEST (0x0203, KNX Standard 03.08.02 Core) to the
+control endpoint on 3671. Its HPAI is the route-back address 0.0.0.0:0, so
+the server answers the request's source address, which also works through
+NAT. Over UDP, a second request carrying the local socket's own address
+follows only when the first draws nothing. Over TCP, route back is the only
+form allowed (protocol code 0x02), as KNXnet/IP Secure and Core v2 servers
+expect. A DESCRIPTION_RESPONSE (0x0204) matches only when the header length
+is 6, the version 0x10, the total length equals the datagram, a 54-octet
+DEVICE_INFO DIB is followed by a SUPP_SVC_FAMILIES DIB, and the DIBs fill
+the body exactly. It is **certain** when the core family is listed,
+**high** otherwise. An echo of the request is a DESCRIPTION_REQUEST and never
+matches; malformed KNX-shaped frames are hints. The response carries the
+identity, so identify mode sends nothing more: friendly name (ISO 8859-1,
+NUL-trimmed, control characters removed), KNX medium, individual address,
+project/installation ID, serial number and manufacturer, routing multicast
+address, MAC and the service families with versions, and, where the optional
+DIBs are present (03.08.03 Device Management, 03.08.09 Secure), secured
+service families, tunnelling slots, mask version and max APDU. The variant
+names Secure, Tunnelling (v2) and Routing. No CONNECT_REQUEST, tunnelling or
+group telegram is ever sent.
+
+### MQTT (`mqtt`, TCP/TLS, passive)
+
+Sends one MQTT 3.1.1 CONNECT (protocol level 4, clean session, a 10-second
+keep-alive, a random `otfp…` client identifier, no will, no credentials) and
+accepts only a strict CONNACK: packet type 2 with zero flags, remaining
+length 2, zero reserved acknowledge flags and a return code 0–5 (an MQTT 5
+broker may instead refuse with reason 0x84 in the MQTT 5 format). Any valid
+CONNACK is **high** — a refusal (bad credentials, not authorised,
+unacceptable protocol version) proves a broker as much as an acceptance and
+is recorded in the evidence; an accepted session answered with PINGRESP to
+PINGREQ is **certain**. The session is closed with DISCONNECT. An echo of
+the CONNECT, text banners and other packets before the CONNACK do not match.
+A broker that closes on a 3.1.1 CONNECT is retried with MQTT 5 only on ports
+1883/8883 (or in identify mode). Identify connects with MQTT 5 first and
+records the protocol version, session-present flag, return/reason code and
+the CONNACK properties (Assigned Client Identifier, Server Keep Alive,
+Maximum Packet Size, Receive Maximum, Retain/Wildcard/Shared Subscription
+Available, Topic Alias Maximum, Response Information, Server Reference,
+Reason String), falling back to 3.1.1; when read-only probes are allowed it
+subscribes at QoS 0 to `$SYS/broker/version` and `$SYS/brokers/+/version`
+for at most one second (product and version where the broker publishes
+them), then unsubscribes. Run over a TLS target for port 8883. Nothing is
+published.
+
+### Sparkplug B (`sparkplugb`, TCP/TLS, read-only, refines MQTT)
+
+Connects like MQTT and subscribes, at QoS 0, to `spBv1.0/STATE/+`
+(Sparkplug 3.0 host application STATE, retained), `STATE/+` (2.x) and the
+node and device topics `spBv1.0/+/+/+` and `spBv1.0/+/+/+/+`, listens for a
+bounded window (two seconds, capped by the timeout; at most 256 messages of
+256 KiB), then unsubscribes and disconnects. A message on an `spBv1.0` topic
+whose payload decodes as a Sparkplug B protobuf Payload with a timestamp,
+or a 3.0 STATE `{"online": bool, "timestamp": n}`, is **certain**; a 2.x
+STATE of `ONLINE`/`OFFLINE` is **high**; a valid topic with an undecodable
+payload is **medium**. Births are not retained, so an idle edge node is seen
+only through a host application's retained STATE or traffic during the
+window. Subscribing reads application data, so it runs only when read-only
+probes are allowed, and refines an MQTT match. Identify listens for the
+whole window and reports group, edge node, device and host application IDs
+(with online state), the STATE version, and from NBIRTH the bdSeq, metric
+count and names (bounded). It never publishes — no NCMD, DCMD, rebirth or
+STATE.
 
 ## Validation
 

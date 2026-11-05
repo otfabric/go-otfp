@@ -52,8 +52,7 @@ func TestClassifyAll(t *testing.T) {
 	if !errors.As(ClassifyIO(ProtocolModbus, "a", "read", os.ErrDeadlineExceeded), &te) || te.Op != "read" {
 		t.Fatal("timeout")
 	}
-	var ce *ConnectionError
-	if !errors.As(ClassifyIO(ProtocolModbus, "a", "read", syscall.ECONNREFUSED), &ce) {
+	if _, ok := errors.AsType[*ConnectionError](ClassifyIO(ProtocolModbus, "a", "read", syscall.ECONNREFUSED)); !ok {
 		t.Fatal("refused on read (UDP port unreachable)")
 	}
 	var de *DetectError

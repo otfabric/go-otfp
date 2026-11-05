@@ -32,7 +32,7 @@ const (
 func TPKT(payload []byte) []byte {
 	b := make([]byte, TPKTHeaderLen+len(payload))
 	b[0] = TPKTVersion
-	binary.BigEndian.PutUint16(b[2:4], uint16(len(b)))
+	binary.BigEndian.PutUint16(b[2:4], wire.Len16(len(b)))
 	copy(b[4:], payload)
 	return b
 }
@@ -45,17 +45,27 @@ var Framer = wire.FixedHeader(TPKTHeaderLen, func(h []byte) int {
 	return int(binary.BigEndian.Uint16(h[2:4]))
 })
 
+// MaxTSELs is the largest combined length of the calling and called TSAPs
+// of a ConnectRequest: the COTP length indicator of the CR, which also
+// counts the fixed part and the TPDU size parameter, is at most 254.
+const MaxTSELs = 254 - 13
+
 // ConnectRequest returns a TPKT-framed COTP CR with the given source
 // reference, calling and called TSAPs and a TPDU size code (0x0A = 1024
-// bytes).
+// bytes). Callers passing TSAPs they did not choose themselves check them
+// against MaxTSELs first: longer ones are a programming error and panic.
 func ConnectRequest(srcRef uint16, calling, called []byte, sizeCode byte) []byte {
-	cr := []byte{0, TPDUConnectRequest, 0, 0, byte(srcRef >> 8), byte(srcRef), 0x00}
+	if len(calling)+len(called) > MaxTSELs {
+		panic(fmt.Sprintf("iso: TSAPs of %d and %d octets exceed %d", len(calling), len(called), MaxTSELs))
+	}
+	cr := binary.BigEndian.AppendUint16([]byte{0, TPDUConnectRequest, 0, 0}, srcRef)
+	cr = append(cr, 0x00)
 	cr = append(cr, ParamTPDUSize, 1, sizeCode)
-	cr = append(cr, ParamCallingTSAP, byte(len(calling)))
+	cr = append(cr, ParamCallingTSAP, wire.Len8(len(calling)))
 	cr = append(cr, calling...)
-	cr = append(cr, ParamCalledTSAP, byte(len(called)))
+	cr = append(cr, ParamCalledTSAP, wire.Len8(len(called)))
 	cr = append(cr, called...)
-	cr[0] = byte(len(cr) - 1)
+	cr[0] = wire.Len8(len(cr) - 1)
 	return TPKT(cr)
 }
 

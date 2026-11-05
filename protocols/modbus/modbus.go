@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/fpx"
@@ -174,6 +175,14 @@ func (f *Fingerprinter) judgeTID(b *fpx.Builder, resp []byte, fc byte, tid uint1
 		b.Score(core.ConfidenceLow, "MBAP framing, but "+err.Error())
 		return r, false
 	}
+	if !r.IsException() {
+		if err := normalShape(fc, r.Data); err != nil {
+			// The probe's own header and function code with a body that
+			// does not answer it: an echo of the request, not a server.
+			b.Score(core.ConfidenceLow, "transaction ID echoed, but "+err.Error())
+			return r, false
+		}
+	}
 	b.Sig("fc", fmt.Sprintf("0x%02x", fc))
 	if r.IsException() {
 		b.Sig("exc", fmt.Sprintf("0x%02x", r.Exception))
@@ -188,6 +197,25 @@ func (f *Fingerprinter) judgeTID(b *fpx.Builder, resp []byte, fc byte, tid uint1
 	b.Sig("unit", fmt.Sprint(r.Unit))
 	b.Meta("unitId", fmt.Sprint(r.Unit))
 	return r, true
+}
+
+// normalShape checks the body of a normal response to one of the probes:
+// Read Device Identification carries at least the MEI type, read code,
+// conformity level, more-follows, next object and object count (the
+// three-octet request does not); a register
+// read a byte count that matches the one register asked for.
+func normalShape(fc byte, data []byte) error {
+	switch fc {
+	case mbap.FCEncapsulated:
+		if len(data) < 6 {
+			return fmt.Errorf("a %d-octet body is not a device identification response", len(data))
+		}
+	case mbap.FCReadHoldingRegisters:
+		if _, err := mbap.Registers(data, 1); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f *Fingerprinter) finish(b *fpx.Builder, trace []core.Exchange) core.Result {
@@ -222,7 +250,7 @@ func parseDeviceID(data []byte) (deviceID, error) {
 	d := deviceID{conformity: data[2], more: data[3] == 0xFF, next: data[4], objects: map[byte]string{}}
 	n := int(data[5])
 	p := data[6:]
-	for i := 0; i < n; i++ {
+	for i := range n {
 		if len(p) < 2 || len(p) < 2+int(p[1]) {
 			return d, fmt.Errorf("object %d overruns the response", i)
 		}
@@ -253,9 +281,7 @@ func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, s *wire.Se
 		if d, err = parseDeviceID(r2.Data); err != nil {
 			break
 		}
-		for k, v := range d.objects {
-			objs[k] = v
-		}
+		maps.Copy(objs, d.objects)
 	}
 	fillIdentity(b.Identity(), objs)
 	b.Evidence(fmt.Sprintf("device identification: %d objects", len(objs)))

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -124,6 +125,13 @@ func (r *reader) read(label string, fc byte, addr, qty uint16) ([]uint16, byte, 
 // Detect probes target.
 func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
 	b := fpx.New(proto)
+	if opts.MaxIntrusiveness < core.ReadOnly {
+		// Reading the SunS marker reads holding registers: a direct call
+		// with the zero Options (passive only) sends nothing, as the
+		// engine would not have run the fingerprinter at all.
+		b.Evidence("not run: the SunS marker read needs read-only probes allowed")
+		return b.Result("sunspec.marker", "read-only probes not allowed; nothing sent", nil), nil
+	}
 	s, err := wire.Dial(ctx, proto, target, opts)
 	if err != nil {
 		return core.NoMatch(proto), err
@@ -132,6 +140,11 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	r := &reader{s: s, unit: f.unit, tid: 0x5300}
 
 	base, fc, modbus, err := f.findMarker(ctx, r)
+	if cerr := ctx.Err(); cerr != nil {
+		// A cancelled scan could not decide, whatever the device
+		// answered before: report the cancellation, not a NoMatch.
+		return b.Result("sunspec.marker", "cancelled", s), core.ClassifyIO(proto, target.Addr(), "read", cerr)
+	}
 	if err != nil && !modbus {
 		if wire.IsTransport(err) {
 			return b.Result("sunspec.marker", "no Modbus response", s), err
@@ -197,11 +210,16 @@ func (f *Fingerprinter) findMarker(ctx context.Context, r *reader) (base uint16,
 }
 
 func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, r *reader, fc byte, base uint16) {
-	addr := uint32(base) + 2
-	regs, _, err := r.read("model1", fc, uint16(addr), 68)
+	if base > math.MaxUint16-2 {
+		// The marker fills the last registers: no model follows it.
+		b.Evidence("no register after the marker")
+		return
+	}
+	addr := base + 2
+	regs, _, err := r.read("model1", fc, addr, 68)
 	if err != nil {
 		// Some devices reject long reads: fall back to the header.
-		regs, _, err = r.read("model1-header", fc, uint16(addr), 2)
+		regs, _, err = r.read("model1-header", fc, addr, 2)
 	}
 	if err != nil {
 		b.Evidence("common model not readable")
@@ -223,21 +241,22 @@ func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, r *reader,
 	// Walk the model chain.
 	for i := 0; i < maxModels && ctx.Err() == nil; i++ {
 		if i > 0 {
-			hdr, _, err := r.read(fmt.Sprintf("model-%d", i), fc, uint16(addr), 2)
+			hdr, _, err := r.read(fmt.Sprintf("model-%d", i), fc, addr, 2)
 			if err != nil {
 				break
 			}
 			regs = hdr
 		}
-		if regs[0] == endModel || addr > 0xFFFF-2 {
+		if regs[0] == endModel || addr > math.MaxUint16-2 {
 			models = append(models, "end")
 			break
 		}
 		models = append(models, strconv.Itoa(int(regs[0])))
-		addr += 2 + uint32(regs[1])
-		if addr > 0xFFFF {
+		next := uint32(addr) + 2 + uint32(regs[1])
+		if next > math.MaxUint16 {
 			break
 		}
+		addr = uint16(next)
 	}
 	if len(models) > 0 {
 		b.Identity().Set("models", strings.Join(models, ","))
@@ -261,7 +280,7 @@ func Common(body []uint16) CommonModel {
 		var sb strings.Builder
 		for _, r := range body[off : off+n] {
 			sb.WriteByte(byte(r >> 8))
-			sb.WriteByte(byte(r))
+			sb.WriteByte(byte(r & 0xFF))
 		}
 		return fpx.Clean(sb.String())
 	}

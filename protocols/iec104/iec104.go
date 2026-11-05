@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/otfabric/go-otfp/core"
@@ -72,6 +73,9 @@ func U(ctrl byte) []byte { return []byte{startByte, 0x04, ctrl, 0x00, 0x00, 0x00
 
 // Framer reads one APDU.
 var Framer wire.Framer = func(b []byte) int {
+	if len(b) == 0 {
+		return 0
+	}
 	if b[0] != startByte {
 		return -1
 	}
@@ -257,12 +261,12 @@ func asduHeader(a []byte) (typeID byte, ca uint16, ok bool) {
 }
 
 func joinInts(v []int) string {
-	s := ""
+	var s strings.Builder
 	for i, x := range v {
 		if i > 0 {
-			s += ","
+			s.WriteString(",")
 		}
-		s += fmt.Sprint(x)
+		fmt.Fprint(&s, x)
 	}
-	return s
+	return s.String()
 }

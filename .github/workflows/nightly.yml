@@ -63,6 +63,14 @@ jobs:
           for r in snap7-interop opcua-interop ieee20305-interop; do
             git clone -q --depth 1 "https://github.com/otfabric/$r.git" "../$r"
           done
+      - name: Load the CAN modules (CANopen gateway test on vcan)
+        run: |
+          # linux-modules-extra carries can, can-raw and vcan on hosted runners.
+          if ! sudo modprobe -a can can-raw vcan 2>/dev/null; then
+            sudo apt-get update -q
+            sudo apt-get install -y -q "linux-modules-extra-$(uname -r)"
+            sudo modprobe -a can can-raw vcan
+          fi
       - name: Interop suite
         env:
           OTFP_REQUIRE_INTEROP: "1"

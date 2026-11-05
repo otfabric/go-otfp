@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/fpx"
@@ -91,7 +92,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	defer s.Close() //nolint:errcheck
 
 	instance := uint32(wildcardInstance)
-	resp, err := s.RoundTripUDP("read-object-id", readProperty(1, wildcardInstance, propObjectIdentifier), maxUDP, answers(1))
+	resp, err := s.RoundTripDatagram("read-object-id", readProperty(1, wildcardInstance, propObjectIdentifier), maxUDP, answers(1))
 	if err == nil {
 		if a, ok := f.judge(b, resp); ok {
 			if a.kind == apduComplexACK {
@@ -105,7 +106,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	}
 	// Fall back to a Who-Is when the wildcard read drew nothing.
 	if b.Confidence() < core.MatchThreshold {
-		resp, err = s.RoundTripUDP("who-is", whoIs(), maxUDP, answersWhoIs)
+		resp, err = s.RoundTripDatagram("who-is", whoIs(), maxUDP, answersWhoIs)
 		if err == nil {
 			if a, ok := f.judge(b, resp); ok && a.kind == apduUnconfirmedReq {
 				if inst, vendor, ok2 := parseIAm(a.apdu); ok2 {
@@ -182,7 +183,7 @@ func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, s *wire.Se
 		// for it and for the property asked: a late or duplicated answer
 		// to an earlier read must not be taken for this one.
 		invoke++
-		resp, err := s.RoundTripUDP(label, readProperty(invoke, instance, prop), maxUDP, answers(invoke))
+		resp, err := s.RoundTripDatagram(label, readProperty(invoke, instance, prop), maxUDP, answers(invoke))
 		if err != nil {
 			return 0, nil, false
 		}
@@ -219,32 +220,38 @@ func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, s *wire.Se
 // invoke ID: BACnet replies to other invoke IDs (late or duplicate answers
 // to earlier requests) and unsolicited I-Ams are discarded; anything that
 // is not a BACnet reply is kept, for the caller to judge.
-func answers(invoke byte) func([]byte) bool {
-	return func(dg []byte) bool {
+func answers(invoke byte) func([]byte) wire.Verdict {
+	return func(dg []byte) wire.Verdict {
 		a, err := parse(dg)
-		if err != nil || a.isResult {
-			return true
+		if err != nil {
+			return wire.Foreign
+		}
+		if a.isResult {
+			return wire.Answer
 		}
 		switch a.kind {
 		case apduComplexACK, apduSimpleACK, apduError, apduReject, apduAbort:
-			return a.invoke == invoke
+			if a.invoke == invoke {
+				return wire.Answer
+			}
 		}
-		return false
+		return wire.Discard
 	}
 }
 
-// answersWhoIs keeps I-Am replies (and anything that is not BACnet) and
-// discards confirmed-service answers, which belong to earlier requests.
-func answersWhoIs(dg []byte) bool {
+// answersWhoIs accepts an I-Am (and a BVLC-Result); a datagram that is not
+// BACnet/IP is foreign.
+func answersWhoIs(dg []byte) wire.Verdict {
 	a, err := parse(dg)
-	if err != nil || a.isResult {
-		return true
+	switch {
+	case err != nil:
+		return wire.Foreign
+	case a.isResult, a.kind == apduUnconfirmedReq && a.service == 0x00:
+		return wire.Answer
 	}
-	return a.kind == apduUnconfirmedReq && a.service == 0x00
+	return wire.Discard
 }
 
-// propertyOf returns the property identifier echoed in a ReadProperty
-// ComplexACK (context tag 1), or 0xFFFFFFFF.
 func propertyOf(a apdu) uint32 {
 	_, val, _, ok := firstContextTag(a.body, 1)
 	if !ok || len(val) == 0 || len(val) > 4 {
@@ -262,7 +269,7 @@ func propertyOf(a apdu) uint32 {
 func bvlc(fn byte, npdu []byte) []byte {
 	b := []byte{bvlcType, fn, 0, 0}
 	b = append(b, npdu...)
-	binary.BigEndian.PutUint16(b[2:4], uint16(len(b)))
+	binary.BigEndian.PutUint16(b[2:4], wire.Len16(len(b)))
 	return b
 }
 
@@ -282,18 +289,11 @@ func whoIs() []byte {
 // contextUnsigned encodes a context-tagged unsigned value with the minimum
 // octets.
 func contextUnsigned(tag byte, v uint32) []byte {
-	var val []byte
-	switch {
-	case v <= 0xFF:
-		val = []byte{byte(v)}
-	case v <= 0xFFFF:
-		val = []byte{byte(v >> 8), byte(v)}
-	case v <= 0xFFFFFF:
-		val = []byte{byte(v >> 16), byte(v >> 8), byte(v)}
-	default:
-		val = []byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)}
+	val := binary.BigEndian.AppendUint32(nil, v)
+	for len(val) > 1 && val[0] == 0 {
+		val = val[1:]
 	}
-	return append([]byte{tag<<4 | 0x08 | byte(len(val))}, val...)
+	return append([]byte{tag<<4 | 0x08 | wire.Len8(len(val))}, val...)
 }
 
 // ---- decoders ----
@@ -564,7 +564,9 @@ func parseIAm(apduBytes []byte) (instance uint32, vendor uint32, ok bool) {
 	if len(p) >= 1 && p[0]&0x08 == 0 {
 		lv := int(p[0] & 0x07)
 		if 1+lv <= len(p) {
-			if v, good := unsignedTag(p[1 : 1+lv]); good {
+			// A value wider than 32 bits is not a vendor identifier
+			// (an Unsigned16); do not report it truncated.
+			if v, good := unsignedTag(p[1 : 1+lv]); good && v <= math.MaxUint32 {
 				vendor = uint32(v)
 			}
 		}

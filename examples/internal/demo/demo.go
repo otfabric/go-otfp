@@ -16,6 +16,16 @@ import (
 // function with "illegal function". It returns the device's address.
 func Modbus() (string, func()) {
 	objects := []string{"OT Fabric", "DEMO-1", "1.2.0", "https://otfabric.io", "Demo PLC", "D-100"}
+	// The object list: count, then id, length and value of each object.
+	list := []byte{byte(len(objects) & 0xFF)}
+	for i, v := range objects {
+		n := len(v)
+		if i > 0xFF || n > 0xFF {
+			panic("demo: Modbus device identification object too long")
+		}
+		list = append(list, byte(i), byte(n))
+		list = append(list, v...)
+	}
 	return serve(func(req []byte) []byte {
 		if len(req) < 8 || req[2] != 0 || req[3] != 0 {
 			return nil
@@ -23,14 +33,14 @@ func Modbus() (string, func()) {
 		tid, unit, fc := req[:2], req[6], req[7]
 		pdu := []byte{fc | 0x80, 0x01}
 		if fc == 0x2B && len(req) >= 11 && req[8] == 0x0E {
-			pdu = []byte{0x2B, 0x0E, req[9], 0x82, 0x00, 0x00, byte(len(objects))}
-			for i, v := range objects {
-				pdu = append(pdu, byte(i), byte(len(v)))
-				pdu = append(pdu, v...)
-			}
+			pdu = append([]byte{0x2B, 0x0E, req[9], 0x82, 0x00, 0x00}, list...)
+		}
+		n := 1 + len(pdu)
+		if n > 0xFFFF {
+			return nil
 		}
 		resp := append([]byte{tid[0], tid[1], 0, 0, 0, 0, unit}, pdu...)
-		binary.BigEndian.PutUint16(resp[4:], uint16(1+len(pdu)))
+		binary.BigEndian.PutUint16(resp[4:], uint16(n))
 		return resp
 	})
 }

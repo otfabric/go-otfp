@@ -191,23 +191,25 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	return finish("Siemens S7comm", s), nil
 }
 
-func u16(v uint16) []byte { return []byte{byte(v >> 8), byte(v)} }
+func u16(v uint16) []byte { return binary.BigEndian.AppendUint16(nil, v) }
 
 // header builds an S7 Job or Userdata header.
 func header(rosctr byte, ref uint16, params, data []byte) []byte {
-	h := []byte{protoS7, rosctr, 0, 0, byte(ref >> 8), byte(ref), 0, 0, 0, 0}
-	binary.BigEndian.PutUint16(h[6:], uint16(len(params)))
-	binary.BigEndian.PutUint16(h[8:], uint16(len(data)))
+	h := binary.BigEndian.AppendUint16([]byte{protoS7, rosctr, 0, 0}, ref)
+	h = append(h, 0, 0, 0, 0)
+	binary.BigEndian.PutUint16(h[6:], wire.Len16(len(params)))
+	binary.BigEndian.PutUint16(h[8:], wire.Len16(len(data)))
 	return append(append(h, params...), data...)
 }
 
 func setupComm(ref, pdu uint16) []byte {
-	return header(rosctrJob, ref, []byte{fnSetupComm, 0x00, 0x00, 0x01, 0x00, 0x01, byte(pdu >> 8), byte(pdu)}, nil)
+	return header(rosctrJob, ref, binary.BigEndian.AppendUint16([]byte{fnSetupComm, 0x00, 0x00, 0x01, 0x00, 0x01}, pdu), nil)
 }
 
 func szlRead(ref, id, index uint16) []byte {
 	params := []byte{0x00, 0x01, 0x12, 0x04, 0x11, 0x44, 0x01, 0x00}
-	data := []byte{0xFF, 0x09, 0x00, 0x04, byte(id >> 8), byte(id), byte(index >> 8), byte(index)}
+	data := binary.BigEndian.AppendUint16([]byte{0xFF, 0x09, 0x00, 0x04}, id)
+	data = binary.BigEndian.AppendUint16(data, index)
 	return header(rosctrUserData, ref, params, data)
 }
 

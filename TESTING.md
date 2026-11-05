@@ -6,7 +6,7 @@ How to run each tier. Peers and images are in [INTEROPERABILITY.md](INTEROPERABI
 
 | Tier | Command | Prerequisites | In CI |
 |---|---|---|---|
-| Unit | `make test`, `make test-race` | none | yes, Go 1.23 to 1.26 |
+| Unit | `make test`, `make test-race` | none | yes, Go 1.26 and 1.27 |
 | End-to-end | `make e2e` (`e2e/`) | none | yes, in the test matrix |
 | Stress | `make stress` (`STRESS`, default 10 shuffled race runs) | none | nightly |
 | Fuzz | `make fuzz` (`FUZZTIME`, default 20s) | none | yes, 10s per target; nightly 5m per target |
@@ -17,6 +17,13 @@ How to run each tier. Peers and images are in [INTEROPERABILITY.md](INTEROPERABI
 `make bench` exists, but the repository has no `Benchmark` functions yet.
 
 The end-to-end tier (`e2e/`) drives the public engine against scripted servers on loopback TCP (`internal/testsrv`). `TestEngineScanFindsTheSpeaker` scans each speaker through `ParseTarget` and the default fingerprinters. `TestCrossProtocolMatrix` runs every TCP fingerprinter against a speaker of each of eight protocols, in detect and identify mode; `TestHostileServersBounded` checks that a hostile server cannot hold a probe past its limits.
+
+Chaos and safety tests run in the unit and end-to-end tiers, with no extra prerequisites:
+
+- `internal/chaos` wraps loopback TCP and UDP speakers with seeded, deterministic faults: one-byte and random fragmentation, delays, duplicates, bit flips, truncation, resets and stalls; for UDP drops, duplicates, reordering, bounded floods of spoofed datagrams, empty and oversized datagrams, answers from another port, and an ICMP-refused port.
+- Each protocol package's `TestChaos` runs its fingerprinter under every fault in detect and identify mode. It checks that the fingerprinter never panics, hangs past its timeout or leaks goroutines or file descriptors; that a fragmented but complete answer still matches; and that a cut answer never scores high.
+- Each package's `TestSafetyContract` records every byte the fingerprinter sends and asserts that only the operations FINGERPRINTS.md documents are used, at each intrusiveness level (for example Modbus FC 43/14 and, read-only, FC 03; never a write or control code).
+- In `e2e/`, `TestCrossProtocolMatrixUnderChaos`, `TestEchoIsNoProtocol`, `TestEngineHonoursMaxIntrusiveness`, `TestPassiveScanSendsNoReadOnlyStep` and `TestUDPHostile` do the same across protocols.
 
 ## Environment variables
 

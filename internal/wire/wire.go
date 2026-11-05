@@ -10,7 +10,9 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"net"
 	"time"
 
@@ -227,7 +229,35 @@ func (s *Session) RoundTrip(label string, probe []byte, frame Framer, max int) (
 // answers to earlier requests, other peers' traffic) are discarded and the
 // read continues within the same retransmission window.
 func (s *Session) RoundTripUDP(label string, probe []byte, max int, accept func([]byte) bool) ([]byte, error) {
-	resp, err := s.udpRoundTrip(probe, max, accept)
+	return s.RoundTripDatagram(label, probe, max, func(dg []byte) Verdict {
+		if accept(dg) {
+			return Answer
+		}
+		return Discard
+	})
+}
+
+// Verdict classifies a datagram received while waiting for an answer.
+type Verdict uint8
+
+// Verdicts.
+const (
+	// Discard: not the answer (a late or duplicate answer to an earlier
+	// request, another peer's traffic): keep listening.
+	Discard Verdict = iota
+	// Answer: the answer to the request.
+	Answer
+	// Foreign: not a frame of the protocol at all. Kept, and returned
+	// when no answer arrives in the retransmission window, so that a
+	// spoofed or stray datagram ahead of the real answer cannot hide it,
+	// while a foreign service is still told apart from a silent one.
+	Foreign
+)
+
+// RoundTripDatagram is RoundTripUDP with a three-way classification of the
+// datagrams received; see Verdict. Empty datagrams are always foreign.
+func (s *Session) RoundTripDatagram(label string, probe []byte, max int, classify func([]byte) Verdict) ([]byte, error) {
+	resp, err := s.udpRoundTrip(probe, max, classify)
 	s.Record(label, probe, resp)
 	return resp, err
 }
@@ -305,11 +335,18 @@ func (s *Session) Next(label string, frame Framer, max int) ([]byte, error) {
 	return resp, err
 }
 
-func (s *Session) udpRoundTrip(probe []byte, max int, accept func([]byte) bool) ([]byte, error) {
+func (s *Session) udpRoundTrip(probe []byte, max int, classify func([]byte) Verdict) ([]byte, error) {
 	buf := make([]byte, max)
-	attempts := s.Retries + 1
+	attempts := 1 // a negative Retries is no retransmission
+	if s.Retries > 0 {
+		attempts += s.Retries
+	}
 	per := s.timeout / time.Duration(attempts)
-	for i := 0; i < attempts; i++ {
+	var (
+		foreign    []byte
+		hasForeign bool
+	)
+	for i := range attempts {
 		if err := s.Send(probe); err != nil {
 			return nil, err
 		}
@@ -319,27 +356,82 @@ func (s *Session) udpRoundTrip(probe []byte, max int, accept func([]byte) bool) 
 				return nil, err
 			}
 			n, err := s.conn.Read(buf)
+			if err != nil && s.ctx.Err() == nil && msgTooLarge(err) {
+				// Windows reports a datagram larger than the buffer as
+				// an error (WSAEMSGSIZE): it is not an answer.
+				s.Record("discarded", nil, buf[:min(n, len(buf))])
+				continue
+			}
 			if err != nil {
+				if s.ctx.Err() == nil && core.IsTimeout(err) && hasForeign {
+					return foreign, nil
+				}
 				if s.ctx.Err() != nil || !core.IsTimeout(err) || i == attempts-1 {
+					if s.ctx.Err() == nil && portUnreachable(err) {
+						return nil, &core.ConnectionError{Protocol: s.proto, Addr: s.addr, Err: err}
+					}
 					return nil, s.classify("read", err)
 				}
 				break // retransmit
 			}
-			if accept == nil || accept(buf[:n]) {
-				return append([]byte(nil), buf[:n]...), nil
+			dg := buf[:n]
+			v := Answer
+			switch {
+			case n == 0:
+				// No protocol answers with an empty datagram, but a
+				// peer that sends only those is not a silent one.
+				v = Foreign
+			case classify != nil:
+				v = classify(dg)
+			}
+			switch v {
+			case Answer:
+				return append([]byte(nil), dg...), nil
+			case Foreign:
+				if !hasForeign {
+					foreign, hasForeign = append([]byte{}, dg...), true
+				}
 			}
 			// A stray datagram (a late answer to an earlier request,
-			// a duplicate): keep listening in the same window.
-			s.Record("discarded", nil, buf[:n])
+			// a duplicate, another peer's traffic): keep listening in
+			// the same window.
+			s.Record("discarded", nil, dg)
 		}
 	}
 	return nil, s.classify("read", context.DeadlineExceeded)
 }
 
 func isReset(err error) bool {
-	var op *net.OpError
-	if errors.As(err, &op) {
+	if op, ok := errors.AsType[*net.OpError](err); ok {
 		return !op.Timeout() && op.Op == "read"
 	}
 	return false
+}
+
+// Len8, Len16 and Len32 return n for a length field of a frame the probes
+// build. Those frames are made of the probes' own fixed fields, so a
+// length out of range is a programming error: they panic rather than put a
+// wrapped length on the wire. Lengths that depend on input are checked by
+// the caller before they get here.
+func Len8(n int) uint8 {
+	if n < 0 || n > math.MaxUint8 {
+		panic(fmt.Sprintf("wire: length %d does not fit an 8-bit field", n))
+	}
+	return uint8(n)
+}
+
+// Len16 is Len8 for a 16-bit field.
+func Len16(n int) uint16 {
+	if n < 0 || n > math.MaxUint16 {
+		panic(fmt.Sprintf("wire: length %d does not fit a 16-bit field", n))
+	}
+	return uint16(n)
+}
+
+// Len32 is Len8 for a 32-bit field.
+func Len32(n int) uint32 {
+	if n < 0 || int64(n) > math.MaxUint32 {
+		panic(fmt.Sprintf("wire: length %d does not fit a 32-bit field", n))
+	}
+	return uint32(n)
 }

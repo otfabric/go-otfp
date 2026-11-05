@@ -15,11 +15,14 @@
 package dnp3
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
+	"slices"
+	"time"
 
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/fpx"
@@ -45,6 +48,12 @@ const (
 
 	selfAddress = 0xFFFC
 	maxFrames   = 8
+
+	// identifyBudget bounds the whole identify phase, in target timeouts:
+	// a complete attribute response arrives in one round trip, so a peer
+	// that drips frames, each just inside the timeout, cannot hold the
+	// probe for every one of the 32 reads.
+	identifyBudget = 3
 )
 
 // Config configures the fingerprinter.
@@ -109,11 +118,15 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	}
 	resp, err := s.RoundTrip("link-status", burst, Framer, maxFrame)
 	var status *Header
-	for i := 0; i < maxFrames; i++ {
+	for range maxFrames {
 		if err != nil {
 			break
 		}
-		if h, ok := f.judge(b, resp); ok {
+		if len(resp) >= headerLen && bytes.Contains(burst, resp) {
+			// One of our own REQUEST_LINK_STATUS frames came back: an
+			// echo service, not an outstation.
+			b.Score(core.ConfidenceLow, "the REQUEST_LINK_STATUS probe was echoed")
+		} else if h, ok := f.judge(b, resp); ok {
 			status = &h
 			break
 		}
@@ -171,13 +184,28 @@ func (f *Fingerprinter) judge(b *fpx.Builder, frame []byte) (Header, bool) {
 	return h, true
 }
 
-// identify reads all device attributes.
+// identify reads all device attributes. The whole phase is bounded by
+// identifyBudget target timeouts (and the scan's context): what arrived
+// before the budget ran out is kept.
 func (f *Fingerprinter) identify(b *fpx.Builder, s *wire.Session, outstation, master uint16) {
+	budget := identifyBudget * s.Timeout()
+	end := time.Now().Add(budget)
+	until := func() time.Time {
+		if t := time.Now().Add(s.Timeout()); t.Before(end) {
+			return t
+		}
+		return end
+	}
 	// Transport FIR|FIN seq 0; application FIR|FIN seq 0, READ, g0v254
 	// qualifier 0x06 (all objects).
 	user := []byte{0xC0, 0xC0, 0x01, 0x00, 0xFE, 0x06}
 	req := Frame(ctrlDIR|ctrlPRM|fcUnconfirmedData, outstation, master, user)
-	frame, err := s.RoundTrip("read-g0v254", req, Framer, maxFrame)
+	var frame []byte
+	err := s.Send(req)
+	if err == nil {
+		frame, err = s.ReadUntil(Framer, maxFrame, until())
+	}
+	s.Record("read-g0v254", req, frame)
 	var apdu []byte
 	for i := 0; i < 32 && err == nil; i++ {
 		h, herr := ParseHeader(frame)
@@ -191,7 +219,12 @@ func (f *Fingerprinter) identify(b *fpx.Builder, s *wire.Session, outstation, ma
 				break
 			}
 		}
-		frame, err = s.Next("response", Framer, maxFrame)
+		if frame, err = s.ReadUntil(Framer, maxFrame, until()); frame != nil || err == nil {
+			s.Record("response", nil, frame)
+		}
+	}
+	if err != nil && !time.Now().Before(end) {
+		b.Evidence(fmt.Sprintf("identify cut short after its %v budget", budget))
 	}
 	attrs, err := ParseAttributes(apdu)
 	if err != nil {
@@ -284,9 +317,20 @@ func ParseHeader(b []byte) (Header, error) {
 	return h, nil
 }
 
-// Frame encodes a data-link frame.
+// maxFrameData is the most user data one data-link frame carries: the
+// one-octet LEN field counts the control and address octets too.
+const maxFrameData = 255 - 5
+
+// Frame encodes a data-link frame. It panics when data is longer than
+// 250 octets (maxFrameData), which no frame can carry.
 func Frame(ctrl byte, dst, src uint16, data []byte) []byte {
-	b := []byte{start0, start1, byte(5 + len(data)), ctrl, byte(dst), byte(dst >> 8), byte(src), byte(src >> 8)}
+	n := 5 + len(data)
+	if n > 0xFF {
+		panic(fmt.Sprintf("dnp3: %d octets of user data exceed one data-link frame (%d)", len(data), maxFrameData))
+	}
+	b := []byte{start0, start1, byte(n), ctrl}
+	b = binary.LittleEndian.AppendUint16(b, dst)
+	b = binary.LittleEndian.AppendUint16(b, src)
 	b = binary.LittleEndian.AppendUint16(b, CRC(b))
 	for len(data) > 0 {
 		k := min(16, len(data))
@@ -300,7 +344,7 @@ func Frame(ctrl byte, dst, src uint16, data []byte) []byte {
 var crcTable = func() (t [256]uint16) {
 	for i := range t {
 		c := uint16(i)
-		for j := 0; j < 8; j++ {
+		for range 8 {
 			if c&1 != 0 {
 				c = c>>1 ^ 0xA6BC
 			} else {
@@ -385,8 +429,8 @@ func attrString(typ byte, v []byte) string {
 		return fpx.Clean(string(v))
 	case 2: // unsigned integer
 		var x uint64
-		for i := len(v) - 1; i >= 0; i-- {
-			x = x<<8 | uint64(v[i])
+		for _, v0 := range slices.Backward(v) {
+			x = x<<8 | uint64(v0)
 		}
 		return fmt.Sprint(x)
 	}

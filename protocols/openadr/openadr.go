@@ -23,7 +23,6 @@ package openadr
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"strings"
 
 	"github.com/otfabric/go-otfp/core"
@@ -107,10 +106,9 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	// OpenADR 2.0b: POST oadrQueryRegistration.
 	if opts.MaxIntrusiveness >= core.ReadOnly {
 		if s, err := wire.Dial(ctx, proto, target, opts); err == nil {
-			resp, rerr := httpx.Request(s, "oadr2b", "POST", host, oadr2bPath, map[string]string{
-				"Content-Type":   "application/xml",
-				"Content-Length": fmt.Sprint(len(queryRegistration)),
-			}, 8192)
+			resp, rerr := httpx.RequestBody(s, "oadr2b", "POST", host, oadr2bPath, map[string]string{
+				"Content-Type": "application/xml",
+			}, []byte(queryRegistration), 8192)
 			if rerr == nil {
 				f.judge2b(b, resp)
 			}
