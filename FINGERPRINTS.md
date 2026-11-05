@@ -25,6 +25,18 @@ fires at `ConfidenceHigh` by default.
 Each result also carries the list of checks that passed (`Evidence`) and a
 stable `Fingerprint` signature for inventories and SIEMs.
 
+Two rules hold for every fingerprinter:
+
+- **An echo is not a protocol.** A reply that is our own request sent back
+  (a TCP or UDP echo service, a loopback) never matches: it scores at most
+  Low, even where the request's framing would otherwise pass every check.
+- **A foreign datagram is not the answer.** Over UDP a datagram that is not
+  an answer to our request (another protocol, a spoofed or empty datagram,
+  an oversized one) is set aside and the exchange keeps waiting for the
+  real answer until its retransmission window ends; only then is the
+  foreign datagram judged. A UDP service of another protocol therefore
+  costs one window before no match.
+
 ## Detection vs. identification
 
 - **Detect** (`ModeDetect`) sends the minimal exchange that tells whether the
@@ -75,8 +87,9 @@ COTP CR (transport selector 0x0001), then an ISO 8327 session CONNECT, an ISO
 8823 presentation CP, an ACSE AARQ for the MMS application context
 (1.0.9506.2.3) and an MMS Initiate-Request. An Initiate-Response is
 **certain**; an ACSE/MMS-level rejection is still **high** (an MMS stack).
-Identify calls the MMS Identify service (vendor, model, revision) and
-concludes the association. The probe bytes match those the `go-mms` client
+Identify calls the MMS Identify service (vendor, model, revision). In both
+modes the association is concluded (MMS Conclude) before the connection is
+closed. The probe bytes match those the `go-mms` client
 sends.
 
 ### Siemens S7comm / S7comm-plus (`s7comm`, TCP, passive)
@@ -107,9 +120,12 @@ Sends ListIdentity (command 0x0063), which needs no session and which every
 EtherNet/IP target answers with its CIP Identity object. Over UDP it is a
 single datagram; over TCP the encapsulation header is validated. The command
 echo, a success status and the echoed sender context make a match **certain**
-and yield vendor (named from the ODVA list), device type, product code,
+(without the echoed context it is **high**; a byte-identical echo of the
+request never matches) and yield vendor (named from the ODVA list), device type, product code,
 revision, serial and product name. The ODVA vendor and device-type tables are
-generated from `go-ethernetip` (see `internal/cmd/gencip`).
+generated from `go-ethernetip` (see `internal/cmd/gencip`). In identify mode
+over TCP a RegisterSession precedes ListIdentity; no other CIP service is
+sent.
 
 ### BACnet/IP (`bacnet`, UDP, passive)
 
@@ -199,7 +215,9 @@ TLS target for an `https://` VTN.
 Targets SLCAN (Lawicel) ASCII gateways that expose a CAN bus over a TCP
 socket. Sends the version command (`V\r`) and, when needed, the serial
 command (`N\r`), and accepts only a strict SLCAN reply: the command's echo
-letter, a fixed-width hexadecimal field and a carriage return. ASCII banners
+letter (some gateways omit it), a hexadecimal field of two to eight digits and
+a carriage return (or BEL for an error); a reply cut before its terminator
+does not match. ASCII banners
 of HTTP, SSH, SMTP and line protocols are rejected, and bare acknowledgements
 alone are too weak to confirm. Identify records the firmware version and
 serial number.

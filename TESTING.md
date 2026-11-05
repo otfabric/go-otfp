@@ -18,6 +18,13 @@ How to run each tier. Peers and images are in [INTEROPERABILITY.md](INTEROPERABI
 
 The end-to-end tier (`e2e/`) drives the public engine against scripted servers on loopback TCP (`internal/testsrv`). `TestEngineScanFindsTheSpeaker` scans each speaker through `ParseTarget` and the default fingerprinters. `TestCrossProtocolMatrix` runs every TCP fingerprinter against a speaker of each of eight protocols, in detect and identify mode; `TestHostileServersBounded` checks that a hostile server cannot hold a probe past its limits.
 
+Chaos and safety tests run in the unit and end-to-end tiers, with no extra prerequisites:
+
+- `internal/chaos` wraps loopback TCP and UDP speakers with seeded, deterministic faults: one-byte and random fragmentation, delays, duplicates, bit flips, truncation, resets and stalls; for UDP drops, duplicates, reordering, bounded floods of spoofed datagrams, empty and oversized datagrams, answers from another port, and an ICMP-refused port.
+- Each protocol package's `TestChaos` runs its fingerprinter under every fault in detect and identify mode. It checks that the fingerprinter never panics, hangs past its timeout or leaks goroutines or file descriptors; that a fragmented but complete answer still matches; and that a cut answer never scores high.
+- Each package's `TestSafetyContract` records every byte the fingerprinter sends and asserts that only the operations FINGERPRINTS.md documents are used, at each intrusiveness level (for example Modbus FC 43/14 and, read-only, FC 03; never a write or control code).
+- In `e2e/`, `TestCrossProtocolMatrixUnderChaos`, `TestEchoIsNoProtocol`, `TestEngineHonoursMaxIntrusiveness`, `TestPassiveScanSendsNoReadOnlyStep` and `TestUDPHostile` do the same across protocols.
+
 ## Environment variables
 
 | Variable | Effect |

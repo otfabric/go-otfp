@@ -40,8 +40,9 @@ type Target struct {
 	// themselves (IEEE 2030.5) start from a clone of it.
 	TLS *tls.Config
 
-	// Path, when set, overrides the HTTP or WebSocket path the web-based
-	// fingerprinters (OCPP, IEEE 2030.5, OpenADR) try first.
+	// Path, when set, overrides the WebSocket path OCPP tries first. The
+	// IEEE 2030.5 and OpenADR fingerprinters probe their standard paths and
+	// ignore it.
 	Path string
 }
 
