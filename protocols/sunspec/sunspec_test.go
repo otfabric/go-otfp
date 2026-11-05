@@ -63,7 +63,7 @@ func device(base uint16, fc byte) testsrv.Handler {
 
 func TestDetectIdentify(t *testing.T) {
 	target := testsrv.TCP(t, device(40000, 0x03))
-	r, err := New().Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify})
+	r, err := New().Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify, MaxIntrusiveness: core.ReadOnly})
 	if err != nil || !r.Matched || r.Confidence != core.ConfidenceCertain {
 		t.Fatalf("%v %v", r, err)
 	}
@@ -79,7 +79,7 @@ func TestDetectIdentify(t *testing.T) {
 
 func TestOtherBaseAndInputRegisters(t *testing.T) {
 	target := testsrv.TCP(t, device(50000, 0x04))
-	r, err := New().Detect(context.Background(), target, core.Options{})
+	r, err := New().Detect(context.Background(), target, core.Options{MaxIntrusiveness: core.ReadOnly})
 	if err != nil || !r.Matched || r.Variant != "base 50000" || r.Fingerprint.Metadata["baseAddress"] != "50000" {
 		t.Fatalf("%v %v", r, err)
 	}
@@ -89,7 +89,7 @@ func TestPlainModbusIsNotSunSpec(t *testing.T) {
 	target := testsrv.TCP(t, func(req []byte) ([]byte, bool) {
 		return mbap.Request(binary.BigEndian.Uint16(req), req[6], req[7], 4, 0, 0, 0, 0), false
 	})
-	r, err := New().Detect(context.Background(), target, core.Options{})
+	r, err := New().Detect(context.Background(), target, core.Options{MaxIntrusiveness: core.ReadOnly})
 	if err != nil || r.Matched || len(r.Evidence) == 0 {
 		t.Fatalf("%v %v", r, err)
 	}
@@ -101,11 +101,11 @@ func TestPlainModbusIsNotSunSpec(t *testing.T) {
 func TestNotModbus(t *testing.T) {
 	target := testsrv.TCP(t, testsrv.Script([]byte("HTTP/1.0 400\r\n\r\n")))
 	target.Timeout = 300 * time.Millisecond
-	r, _ := New().Detect(context.Background(), target, core.Options{})
+	r, _ := New().Detect(context.Background(), target, core.Options{MaxIntrusiveness: core.ReadOnly})
 	if r.Matched {
 		t.Fatalf("%v", r)
 	}
-	r, err := New().Detect(context.Background(), testsrv.Closed(t), core.Options{})
+	r, err := New().Detect(context.Background(), testsrv.Closed(t), core.Options{MaxIntrusiveness: core.ReadOnly})
 	if err == nil || r.Matched {
 		t.Fatalf("closed: %v %v", r, err)
 	}

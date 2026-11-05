@@ -52,7 +52,9 @@ can exclude the noisier ones:
 - **ReadOnly** — also reads application data (SunSpec's holding-register
   marker). Skipped unless the scan allows read-only probes. A passive
   fingerprinter may still take an optional read-only step only when the scan
-  allows it: Modbus's FC 03 fallback, OpenADR's 2.0b registration POST.
+  allows it: Modbus's FC 03 fallback, OpenADR's 2.0b registration POST,
+  CANopen's SDO identity reads. A read-only fingerprinter (SunSpec, Sparkplug
+  B) called directly with passive-only options sends nothing.
 
 ## Per-protocol
 

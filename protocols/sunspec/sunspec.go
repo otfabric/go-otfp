@@ -125,6 +125,13 @@ func (r *reader) read(label string, fc byte, addr, qty uint16) ([]uint16, byte, 
 // Detect probes target.
 func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
 	b := fpx.New(proto)
+	if opts.MaxIntrusiveness < core.ReadOnly {
+		// Reading the SunS marker reads holding registers: a direct call
+		// with the zero Options (passive only) sends nothing, as the
+		// engine would not have run the fingerprinter at all.
+		b.Evidence("not run: the SunS marker read needs read-only probes allowed")
+		return b.Result("sunspec.marker", "read-only probes not allowed; nothing sent", nil), nil
+	}
 	s, err := wire.Dial(ctx, proto, target, opts)
 	if err != nil {
 		return core.NoMatch(proto), err

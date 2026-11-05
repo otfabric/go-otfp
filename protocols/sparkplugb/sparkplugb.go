@@ -84,9 +84,16 @@ func (f *Fingerprinter) Info() core.Info {
 	}
 }
 
-// Detect probes target.
+// Detect probes target. Subscribing reads application data, so nothing
+// is sent unless opts allows read-only probes: a direct call with the
+// zero Options (passive only) returns no match without connecting, as the
+// engine would not have run the fingerprinter at all.
 func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
 	b := fpx.New(proto)
+	if opts.MaxIntrusiveness < core.ReadOnly {
+		b.Evidence("not run: Sparkplug B subscribes, which needs read-only probes allowed")
+		return b.Result("sparkplugb.subscribe", "read-only probes not allowed; nothing sent", nil), nil
+	}
 	var trace []core.Exchange
 	clientID := f.ClientID
 	if clientID == "" {

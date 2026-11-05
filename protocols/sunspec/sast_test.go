@@ -40,7 +40,7 @@ func TestMarkerAtTopOfRegisterSpace(t *testing.T) {
 		return mbap.Request(tid, req[6], pdu...), false
 	})
 	f := NewWithConfig(Config{Bases: []uint16{0xFFFE}})
-	r, err := f.Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify})
+	r, err := f.Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify, MaxIntrusiveness: core.ReadOnly})
 	if err != nil || !r.Matched {
 		t.Fatalf("%v %v", r, err)
 	}

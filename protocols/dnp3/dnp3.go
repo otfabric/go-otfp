@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"time"
 
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/fpx"
@@ -47,6 +48,12 @@ const (
 
 	selfAddress = 0xFFFC
 	maxFrames   = 8
+
+	// identifyBudget bounds the whole identify phase, in target timeouts:
+	// a complete attribute response arrives in one round trip, so a peer
+	// that drips frames, each just inside the timeout, cannot hold the
+	// probe for every one of the 32 reads.
+	identifyBudget = 3
 )
 
 // Config configures the fingerprinter.
@@ -177,13 +184,28 @@ func (f *Fingerprinter) judge(b *fpx.Builder, frame []byte) (Header, bool) {
 	return h, true
 }
 
-// identify reads all device attributes.
+// identify reads all device attributes. The whole phase is bounded by
+// identifyBudget target timeouts (and the scan's context): what arrived
+// before the budget ran out is kept.
 func (f *Fingerprinter) identify(b *fpx.Builder, s *wire.Session, outstation, master uint16) {
+	budget := identifyBudget * s.Timeout()
+	end := time.Now().Add(budget)
+	until := func() time.Time {
+		if t := time.Now().Add(s.Timeout()); t.Before(end) {
+			return t
+		}
+		return end
+	}
 	// Transport FIR|FIN seq 0; application FIR|FIN seq 0, READ, g0v254
 	// qualifier 0x06 (all objects).
 	user := []byte{0xC0, 0xC0, 0x01, 0x00, 0xFE, 0x06}
 	req := Frame(ctrlDIR|ctrlPRM|fcUnconfirmedData, outstation, master, user)
-	frame, err := s.RoundTrip("read-g0v254", req, Framer, maxFrame)
+	var frame []byte
+	err := s.Send(req)
+	if err == nil {
+		frame, err = s.ReadUntil(Framer, maxFrame, until())
+	}
+	s.Record("read-g0v254", req, frame)
 	var apdu []byte
 	for i := 0; i < 32 && err == nil; i++ {
 		h, herr := ParseHeader(frame)
@@ -197,7 +219,12 @@ func (f *Fingerprinter) identify(b *fpx.Builder, s *wire.Session, outstation, ma
 				break
 			}
 		}
-		frame, err = s.Next("response", Framer, maxFrame)
+		if frame, err = s.ReadUntil(Framer, maxFrame, until()); frame != nil || err == nil {
+			s.Record("response", nil, frame)
+		}
+	}
+	if err != nil && !time.Now().Before(end) {
+		b.Evidence(fmt.Sprintf("identify cut short after its %v budget", budget))
 	}
 	attrs, err := ParseAttributes(apdu)
 	if err != nil {

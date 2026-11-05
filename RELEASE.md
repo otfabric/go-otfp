@@ -30,6 +30,8 @@
 - SunSpec: identify with base 0xFFFE wrapped to register 0; a cancellation between reads was reported as a clean no match.
 - CAN: a version reply cut before its terminator scored high.
 - IEC 104: `Framer(nil)` panicked.
+- DNP3: identify against a peer that drips frames could take up to 32 timeouts; it is now bounded at 3 × the timeout, keeps what it read and says it was cut short.
+- SunSpec and Sparkplug B: a direct `Detect` call with passive-only options (the zero `core.Options`) read registers or subscribed; they now send nothing unless read-only probes are allowed (the engine already skipped them).
 
 ### Changed
 

@@ -5,6 +5,8 @@ package dnp3
 import (
 	"bytes"
 	"context"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,6 +115,72 @@ func TestIdentifyFloodBounded(t *testing.T) {
 	}
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("identify took %v", d)
+	}
+}
+
+// Regression: a peer that answers the attribute READ with frames dripped
+// one just inside each read timeout, never with FIN, used to hold identify
+// for every one of its 32 reads (32 timeouts, about 96 s at the 3 s
+// default). The identify phase is now bounded by identifyBudget timeouts:
+// Detect returns within that budget, keeps the attributes of the fragment
+// read so far and says identify was cut short.
+func TestIdentifyDripBounded(t *testing.T) {
+	const timeout = 200 * time.Millisecond
+	vendor := []byte{0xC0, 0x81, 0x00, 0x00, 0x00, 252, 0x00, 0, 0, 1, 4, 'A', 'c', 'm', 'e'}
+	target := testsrv.Raw(t, func(c net.Conn) {
+		buf := make([]byte, 4096)
+		for {
+			_ = c.SetReadDeadline(time.Now().Add(5 * time.Second))
+			n, err := c.Read(buf)
+			if err != nil {
+				return
+			}
+			req := buf[:n]
+			h, err := ParseHeader(req[:min(FrameLen(req[2]), len(req))])
+			if err != nil {
+				return
+			}
+			if h.Ctrl&0x0F == fcRequestLinkStatus {
+				if _, err := c.Write(Frame(fcLinkStatus, h.Src, h.Dst, nil)); err != nil {
+					return
+				}
+				continue
+			}
+			// FIR without FIN, then continuation segments, one every
+			// 0.85 timeouts; bounded so that the server ends with the test.
+			for i := range 64 {
+				data := []byte{0x01, 0x01, 0x01, 0x01}
+				if i == 0 {
+					data = append([]byte{0x40}, vendor...)
+				}
+				if _, err := c.Write(Frame(0x44, h.Src, h.Dst, data)); err != nil {
+					return
+				}
+				time.Sleep(timeout * 85 / 100)
+			}
+			return
+		}
+	})
+	target.Timeout = timeout
+	start := time.Now()
+	r, err := NewWithConfig(Config{Outstations: []uint16{1024}}).Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify, Trace: true})
+	d := time.Since(start)
+	if err != nil || !r.Matched {
+		t.Fatalf("%v %v", r, err)
+	}
+	t.Logf("identify returned after %v", d)
+	if bound := (identifyBudget + 2) * timeout; d > bound {
+		t.Fatalf("identify took %v, budget %v", d, bound)
+	}
+	if r.Identity == nil || r.Identity.Vendor != "Acme" {
+		t.Fatalf("the attributes read before the budget ran out were lost: %+v", r.Identity)
+	}
+	cut := false
+	for _, e := range r.Evidence {
+		cut = cut || strings.Contains(e, "identify cut short")
+	}
+	if !cut {
+		t.Fatalf("no cut-short evidence: %v", r.Evidence)
 	}
 }
 

@@ -144,3 +144,17 @@ func TestOddDevices(t *testing.T) {
 		t.Fatalf("past the end: %v %v %+v", r, err, r.Identity)
 	}
 }
+
+// A direct call with passive-only options must send nothing: reading the
+// marker reads holding registers.
+func TestPassiveSendsNothing(t *testing.T) {
+	var got int
+	target := testsrv.TCP(t, func(req []byte) ([]byte, bool) { got++; return nil, true })
+	r, err := New().Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify})
+	if err != nil || r.Matched {
+		t.Fatalf("passive: %v, %v", r, err)
+	}
+	if got != 0 {
+		t.Fatalf("passive sent %d requests", got)
+	}
+}
