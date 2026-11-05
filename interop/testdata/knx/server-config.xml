@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT -->
+<knxServer name="knx-interop" friendlyName="otfp-calimero">
+  <discovery listenNetIf="eth0" outgoingNetIf="eth0" activate="true"/>
+  <serviceContainer activate="true" routing="true" networkMonitoring="false" udpPort="3671" netif="eth0" >
+    <knxAddress type="individual">1.1.0</knxAddress>
+    <routing>224.0.23.12</routing>
+    <knxSubnet type="emulate">knx-interop</knxSubnet>
+    <groupAddressFilter/>
+    <additionalAddresses>
+      <knxAddress type="individual">1.1.10</knxAddress>
+      <knxAddress type="individual">1.1.11</knxAddress>
+      <knxAddress type="individual">1.1.12</knxAddress>
+      <knxAddress type="individual">1.1.13</knxAddress>
+      <knxAddress type="individual">1.1.14</knxAddress>
+      <knxAddress type="individual">1.1.15</knxAddress>
+      <knxAddress type="individual">1.1.16</knxAddress>
+      <knxAddress type="individual">1.1.17</knxAddress>
+    </additionalAddresses>
+    
+  </serviceContainer>
+</knxServer>

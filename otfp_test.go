@@ -24,6 +24,9 @@ func TestDefaultRegistry(t *testing.T) {
 	if r.Get(core.ProtocolENIP, core.TCP) == nil || r.Get(core.ProtocolENIP, core.UDP) == nil {
 		t.Fatal("ENIP should be registered over TCP and UDP")
 	}
+	if r.Get(core.ProtocolKNX, core.TCP) == nil || r.Get(core.ProtocolKNX, core.UDP) == nil {
+		t.Fatal("KNXnet/IP should be registered over TCP and UDP")
+	}
 	if r.Get(core.ProtocolBACnet, core.UDP) == nil {
 		t.Fatal("BACnet should be UDP")
 	}
@@ -41,7 +44,7 @@ func TestFingerprintersFresh(t *testing.T) {
 	if &a[0] == &b[0] {
 		t.Fatal("Fingerprinters should return fresh slices")
 	}
-	if len(a) != len(core.AllProtocols())+1 { // +1 for ENIP's second transport
+	if len(a) != len(core.AllProtocols())+2 { // +2: EtherNet/IP and KNXnet/IP over both transports
 		t.Fatalf("%d fingerprinters", len(a))
 	}
 }
