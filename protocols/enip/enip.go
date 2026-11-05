@@ -17,6 +17,7 @@
 package enip
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/binary"
@@ -87,9 +88,15 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	if f.network == core.UDP {
 		// Over UDP, discard encapsulation replies carrying another sender
 		// context (answers to other scanners, or late duplicates).
-		resp, err = s.RoundTripUDP("list-identity", probe, maxFrame, func(dg []byte) bool {
+		resp, err = s.RoundTripDatagram("list-identity", probe, maxFrame, func(dg []byte) wire.Verdict {
 			h, _, perr := parseEncap(dg)
-			return perr != nil || h.context == ctxTag
+			switch {
+			case perr != nil:
+				return wire.Foreign
+			case h.context == ctxTag:
+				return wire.Answer
+			}
+			return wire.Discard // another request's reply
 		})
 	} else {
 		resp, err = s.RoundTrip("list-identity", probe, framer, maxFrame)
@@ -99,6 +106,12 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 			return b.Result("enip.listidentity", "connection closed", s), nil
 		}
 		return b.Result("enip.listidentity", "no EtherNet/IP response", s), err
+	}
+	if bytes.Equal(resp, probe) {
+		// The request came back unchanged: an echo service. A target
+		// answers ListIdentity with at least a CPF item count.
+		b.Score(core.ConfidenceLow, "the ListIdentity request was echoed")
+		return b.Result("enip.listidentity", "echo, not EtherNet/IP", s), nil
 	}
 	h, body, perr := parseEncap(resp)
 	if perr != nil {
@@ -123,7 +136,11 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		b.Score(core.ConfidenceHigh, "valid ListIdentity encapsulation, but "+derr.Error())
 		return b.Result("enip.listidentity", "EtherNet/IP", s), nil
 	}
-	b.Score(core.ConfidenceCertain, fmt.Sprintf("ListIdentity: %s, product %q", vendorName(id.vendorID), id.productName))
+	conf := core.ConfidenceCertain
+	if h.context != ctxTag {
+		conf = core.ConfidenceHigh // certain needs the echoed sender context
+	}
+	b.Score(conf, fmt.Sprintf("ListIdentity: %s, product %q", vendorName(id.vendorID), id.productName))
 	f.fill(b, id)
 
 	if opts.Mode == core.ModeIdentify && f.network == core.TCP {

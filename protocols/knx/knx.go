@@ -117,12 +117,12 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 
 	var resp []byte
 	if f.network == core.UDP {
-		resp, err = s.RoundTripUDP("description-routeback", descriptionRequest(hostUDP, nil, 0), maxFrame, answers)
+		resp, err = s.RoundTripDatagram("description-routeback", descriptionRequest(hostUDP, nil, 0), maxFrame, answers)
 		var te *core.TimeoutError
 		if errors.As(err, &te) && ctx.Err() == nil {
 			if ip, port, ok := localHPAI(s.Conn().LocalAddr()); ok {
 				var err2 error
-				resp, err2 = s.RoundTripUDP("description", descriptionRequest(hostUDP, ip, port), maxFrame, answers)
+				resp, err2 = s.RoundTripDatagram("description", descriptionRequest(hostUDP, ip, port), maxFrame, answers)
 				if err2 == nil {
 					err = nil
 					b.Evidence("answered the HPAI of the local socket, not route back")
@@ -266,9 +266,15 @@ var framer = wire.FixedHeader(headerLen, func(h []byte) int {
 // (ROUTING_INDICATION, ROUTING_LOST_MESSAGE, ROUTING_BUSY: service family
 // 0x05), which are bus traffic and never an answer to a request. Anything
 // else is judged by parse, including the request's own echo.
-func answers(dg []byte) bool {
+func answers(dg []byte) wire.Verdict {
 	h, ok := header(dg)
-	return !ok || h>>8 != famRouting
+	switch {
+	case !ok:
+		return wire.Foreign
+	case h>>8 == famRouting:
+		return wire.Discard
+	}
+	return wire.Answer
 }
 
 // ---- decoders ----

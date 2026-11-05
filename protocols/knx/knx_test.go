@@ -15,6 +15,7 @@ import (
 
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/testsrv"
+	"github.com/otfabric/go-otfp/internal/wire"
 )
 
 func unhex(s string) []byte {
@@ -414,7 +415,7 @@ func TestHelpers(t *testing.T) {
 	if framer(unhex("06 20 02 04 00 10")) != -1 || framer(unhex("06 10 02 04 ff ff")) != -1 || framer(unhex("06 10")) != 0 {
 		t.Fatal("framer")
 	}
-	if !answers([]byte("x")) || answers(frame(0x0530)) || !answers(unhex(knxdResp)) || !answers(frame(0x0202)) {
+	if answers([]byte("x")) != wire.Foreign || answers(frame(0x0530)) != wire.Discard || answers(unhex(knxdResp)) != wire.Answer || answers(frame(0x0202)) != wire.Answer {
 		t.Fatal("answers")
 	}
 	// Short optional DIBs are tolerated but yield nothing.

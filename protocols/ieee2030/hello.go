@@ -7,8 +7,10 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/otfabric/go-otfp/internal/wire"
 )
@@ -106,11 +108,25 @@ var recordFramer = wire.FixedHeader(5, func(h []byte) int {
 
 // readFlight sends the ClientHello and parses the server's flight up to
 // ServerHelloDone, an alert, or a read failure.
+// Bounds of the server flight: a real one is a handful of records and a
+// few kilobytes, so a peer that keeps sending records (or announces a
+// huge handshake message) cannot hold the probe or grow its buffer.
+const (
+	maxRecords   = 64
+	maxHandshake = 256 << 10
+)
+
+// errFlightTooLong reports a flight past maxRecords or maxHandshake.
+var errFlightTooLong = errors.New("server flight exceeds the bounds of a TLS hello flight")
+
 func readFlight(s *wire.Session, serverName string) (flight, error) {
 	var f flight
 	rec, err := s.RoundTrip("client-hello", clientHello(serverName), recordFramer, maxFlight)
+	// The whole flight must arrive within two timeouts of the hello,
+	// however the peer paces its records.
+	deadline := time.Now().Add(2 * s.Timeout())
 	var hs []byte // handshake bytes, reassembled across records
-	for err == nil {
+	for records := 1; err == nil; records++ {
 		if len(rec) < 5 || (rec[0] != recHandshake && rec[0] != recAlert) {
 			return f, fmt.Errorf("not a TLS record")
 		}
@@ -125,13 +141,17 @@ func readFlight(s *wire.Session, serverName string) (flight, error) {
 		if hs, err = f.parse(hs); err != nil || f.done {
 			return f, err
 		}
-		rec, err = s.Next("server-flight", recordFramer, maxFlight)
+		if records >= maxRecords || len(hs) > maxHandshake || !time.Now().Before(deadline) {
+			return f, errFlightTooLong
+		}
+		rec, err = s.ReadUntil(recordFramer, maxFlight, deadline)
+		if rec != nil {
+			s.Record("server-flight", nil, rec)
+		}
 	}
 	return f, err
 }
 
-// parse consumes the complete handshake messages of hs and returns what is
-// left of an incomplete one.
 func (f *flight) parse(hs []byte) ([]byte, error) {
 	for len(hs) >= 4 {
 		n := int(hs[1])<<16 | int(hs[2])<<8 | int(hs[3])

@@ -88,6 +88,12 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	if perr != nil {
 		return b.Result("opcua.hel", "not OPC UA", s), nil
 	}
+	if typ == msgHELLO {
+		// A server never sends HEL: this is our own Hello coming back
+		// from an echo service (or another client).
+		b.Score(core.ConfidenceLow, "HEL received in answer to HEL: the Hello was echoed")
+		return b.Result("opcua.hel", "echo, not OPC UA", s), nil
+	}
 	switch typ {
 	case msgACK:
 		if len(body) < 20 || chunk != chunkF {

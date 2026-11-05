@@ -31,6 +31,12 @@ type Response struct {
 // method and path are required; host sets the Host header; extra adds or
 // overrides header fields. The body is read up to maxBody octets.
 func Request(s *wire.Session, label, method, host, path string, extra map[string]string, maxBody int) (*Response, error) {
+	return RequestBody(s, label, method, host, path, extra, nil, maxBody)
+}
+
+// RequestBody is Request with a request body, sent after the header with
+// its Content-Length.
+func RequestBody(s *wire.Session, label, method, host, path string, extra map[string]string, body []byte, maxBody int) (*Response, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %s HTTP/1.1\r\n", method, path)
 	fmt.Fprintf(&b, "Host: %s\r\n", host)
@@ -46,7 +52,13 @@ func Request(s *wire.Session, label, method, host, path string, extra map[string
 	if !hasConnClose {
 		b.WriteString("Connection: close\r\n")
 	}
+	if body != nil {
+		if _, set := extra["Content-Length"]; !set {
+			fmt.Fprintf(&b, "Content-Length: %d\r\n", len(body))
+		}
+	}
 	b.WriteString("\r\n")
+	b.Write(body)
 
 	if err := s.Send([]byte(b.String())); err != nil {
 		return nil, err

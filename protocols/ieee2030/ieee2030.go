@@ -26,6 +26,7 @@ package ieee2030
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -81,6 +82,10 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	if err != nil && wire.IsTransport(err) && fl.suite == 0 {
 		return b.Result("ieee2030.tls", "no TLS response", nil).WithExchanges(trace), err
 	}
+	if errors.Is(err, errFlightTooLong) {
+		b.Evidence(err.Error())
+		return b.Result("ieee2030.tls", "not a TLS server flight", nil).WithExchanges(trace), nil
+	}
 	f.scoreFlight(b, fl)
 
 	// 2. When the server chose a suite crypto/tls implements, finish a
@@ -102,9 +107,14 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 // scoreFlight scores the shape of the server's TLS flight.
 func (f *Fingerprinter) scoreFlight(b *fpx.Builder, fl flight) {
 	switch {
-	case fl.suite == suiteCCM8:
+	case fl.suite == suiteCCM8 && fl.done:
 		b.Score(core.ConfidenceHigh, "server selected TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8, the IEEE 2030.5 cipher suite")
 		b.Sig("tls", "ccm8")
+	case fl.suite == suiteCCM8:
+		// The ServerHello is whole, the flight is not: a cut or hostile
+		// stream is not a server whose handshake we have seen.
+		b.Score(core.ConfidenceMedium, "server selected TLS_ECDHE_ECDSA_WITH_AES_128_CCM_8, but the flight ended before ServerHelloDone")
+		b.Sig("tls", "ccm8-partial")
 	case fl.certRequested && fl.certECDSA:
 		b.Score(core.ConfidenceHigh, "mutual-TLS server with an ECDSA certificate (IEEE 2030.5 shape)")
 		b.Sig("tls", "mtls-ecdsa")

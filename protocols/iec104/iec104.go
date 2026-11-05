@@ -73,6 +73,9 @@ func U(ctrl byte) []byte { return []byte{startByte, 0x04, ctrl, 0x00, 0x00, 0x00
 
 // Framer reads one APDU.
 var Framer wire.Framer = func(b []byte) int {
+	if len(b) == 0 {
+		return 0
+	}
 	if b[0] != startByte {
 		return -1
 	}
@@ -263,7 +266,7 @@ func joinInts(v []int) string {
 		if i > 0 {
 			s.WriteString(",")
 		}
-		s.WriteString(fmt.Sprint(x))
+		fmt.Fprint(&s, x)
 	}
 	return s.String()
 }

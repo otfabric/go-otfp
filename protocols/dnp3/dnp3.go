@@ -15,6 +15,7 @@
 package dnp3
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -114,7 +115,11 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		if err != nil {
 			break
 		}
-		if h, ok := f.judge(b, resp); ok {
+		if len(resp) >= headerLen && bytes.Contains(burst, resp) {
+			// One of our own REQUEST_LINK_STATUS frames came back: an
+			// echo service, not an outstation.
+			b.Score(core.ConfidenceLow, "the REQUEST_LINK_STATUS probe was echoed")
+		} else if h, ok := f.judge(b, resp); ok {
 			status = &h
 			break
 		}

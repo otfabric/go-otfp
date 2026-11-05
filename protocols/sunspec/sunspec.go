@@ -133,6 +133,11 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	r := &reader{s: s, unit: f.unit, tid: 0x5300}
 
 	base, fc, modbus, err := f.findMarker(ctx, r)
+	if cerr := ctx.Err(); cerr != nil {
+		// A cancelled scan could not decide, whatever the device
+		// answered before: report the cancellation, not a NoMatch.
+		return b.Result("sunspec.marker", "cancelled", s), core.ClassifyIO(proto, target.Addr(), "read", cerr)
+	}
 	if err != nil && !modbus {
 		if wire.IsTransport(err) {
 			return b.Result("sunspec.marker", "no Modbus response", s), err

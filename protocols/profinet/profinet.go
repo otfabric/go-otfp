@@ -94,9 +94,15 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	probe := readImplicit(activity, indexIM0)
 	// Discard DCE/RPC replies for other activities (late answers, other
 	// clients); keep anything else for judging.
-	resp, err := s.RoundTripUDP("read-implicit", probe, maxUDP, func(dg []byte) bool {
+	resp, err := s.RoundTripDatagram("read-implicit", probe, maxUDP, func(dg []byte) wire.Verdict {
 		h, _, perr := parseHeader(dg)
-		return perr != nil || h.activity == activity
+		switch {
+		case perr != nil:
+			return wire.Foreign
+		case h.activity == activity:
+			return wire.Answer
+		}
+		return wire.Discard // another activity's reply
 	})
 	if err != nil {
 		if b.Confidence() == 0 {
@@ -118,6 +124,11 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	b.Meta("rpcType", rpcTypeName(h.typ))
 	b.Sig("type", rpcTypeName(h.typ))
 	switch h.typ {
+	case typeRequest:
+		// Only the probing side sends a request with our activity: the
+		// probe was echoed.
+		b.Score(core.ConfidenceLow, "DCE/RPC request with our activity UUID: the probe was echoed")
+		return b.Result("profinet.rpc", "echo, not PROFINET", s), nil
 	case typeResponse:
 		b.Score(core.ConfidenceCertain, "ReadImplicit response on the PNIO device interface")
 		if opts.Mode == core.ModeIdentify {

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"syscall"
 )
 
 // ErrNoFingerprinters is returned by the engine when no registered
@@ -65,7 +64,7 @@ func (e *ConnectionError) Unwrap() error { return e.Err }
 // Refused reports whether the connection was actively refused (TCP RST, or
 // ICMP port unreachable on a connected UDP socket): nothing listens there.
 func (e *ConnectionError) Refused() bool {
-	return errors.Is(e.Err, syscall.ECONNREFUSED)
+	return isRefused(e.Err)
 }
 
 // InvalidResponseError is a response that was recognisably this protocol
@@ -111,7 +110,7 @@ func ClassifyIO(p Protocol, addr, op string, err error) error {
 	if IsTimeout(err) {
 		return &TimeoutError{Protocol: p, Addr: addr, Op: op, Err: err}
 	}
-	if errors.Is(err, syscall.ECONNREFUSED) {
+	if isRefused(err) {
 		return &ConnectionError{Protocol: p, Addr: addr, Err: err}
 	}
 	return &DetectError{Protocol: p, Op: op, Err: err}
