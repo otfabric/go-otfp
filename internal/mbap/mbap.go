@@ -31,7 +31,7 @@ const (
 func Request(tid uint16, unit byte, pdu ...byte) []byte {
 	b := make([]byte, HeaderLen+len(pdu))
 	binary.BigEndian.PutUint16(b[0:2], tid)
-	binary.BigEndian.PutUint16(b[4:6], uint16(1+len(pdu)))
+	binary.BigEndian.PutUint16(b[4:6], wire.Len16(1+len(pdu)))
 	b[6] = unit
 	copy(b[7:], pdu)
 	return b
@@ -39,7 +39,8 @@ func Request(tid uint16, unit byte, pdu ...byte) []byte {
 
 // ReadRegisters returns an FC03 or FC04 request ADU.
 func ReadRegisters(tid uint16, unit, fc byte, addr, qty uint16) []byte {
-	return Request(tid, unit, fc, byte(addr>>8), byte(addr), byte(qty>>8), byte(qty))
+	pdu := binary.BigEndian.AppendUint16([]byte{fc}, addr)
+	return Request(tid, unit, binary.BigEndian.AppendUint16(pdu, qty)...)
 }
 
 // Framer reads one ADU.

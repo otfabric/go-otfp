@@ -183,7 +183,7 @@ type header struct {
 func encap(command uint16, session uint32, ctx [8]byte, data []byte) []byte {
 	b := make([]byte, headerLen+len(data))
 	binary.LittleEndian.PutUint16(b[0:], command)
-	binary.LittleEndian.PutUint16(b[2:], uint16(len(data)))
+	binary.LittleEndian.PutUint16(b[2:], wire.Len16(len(data)))
 	binary.LittleEndian.PutUint32(b[4:], session)
 	copy(b[12:20], ctx[:])
 	copy(b[24:], data)

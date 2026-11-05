@@ -8,6 +8,8 @@ import (
 	"net"
 	"strconv"
 	"time"
+
+	"github.com/otfabric/go-otfp/internal/tlsx"
 )
 
 // DefaultTimeout is the per-operation timeout used when Target.Timeout is
@@ -101,7 +103,7 @@ func ParseTarget(s string) (Target, error) {
 		case "udp":
 			t.Network = UDP
 		case "tls", "tcp+tls":
-			t.TLS = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // fingerprinting identifies, it does not trust
+			t.TLS = tlsx.Fingerprint()
 		default:
 			return Target{}, fmt.Errorf("unknown scheme %q (want tcp, udp or tls)", s[:i])
 		}

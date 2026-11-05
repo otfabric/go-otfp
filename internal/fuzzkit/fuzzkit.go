@@ -48,12 +48,13 @@ func Split(data []byte) [][]byte {
 func Join(replies ...[]byte) []byte {
 	var out []byte
 	for i, r := range replies {
-		if i == len(replies)-1 || len(r) > 255 {
+		n := len(r)
+		if i == len(replies)-1 || n > 255 {
 			out = append(out, 255)
 			out = append(out, r...)
 			continue
 		}
-		out = append(out, byte(len(r)))
+		out = append(out, byte(n))
 		out = append(out, r...)
 	}
 	return out

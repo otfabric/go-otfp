@@ -47,15 +47,20 @@ type flight struct {
 	done          bool   // ServerHelloDone seen
 }
 
+// maxServerName is the longest server_name sent: a DNS host name (RFC
+// 1035) is at most 253 octets in text form. A longer name cannot be a
+// host name and is left out rather than sent.
+const maxServerName = 253
+
 // clientHello builds a TLS 1.2 ClientHello offering CCM_8. TLS 1.3 is not
 // offered: in TLS 1.2 the server's certificate and certificate request
 // travel in plaintext, which is what the probe reads.
 func clientHello(serverName string) []byte {
 	var ext []byte
-	if serverName != "" && net.ParseIP(serverName) == nil {
-		name := binary.BigEndian.AppendUint16([]byte{0}, uint16(len(serverName)))
+	if n := len(serverName); n > 0 && n <= maxServerName && net.ParseIP(serverName) == nil {
+		name := binary.BigEndian.AppendUint16([]byte{0}, uint16(n))
 		name = append(name, serverName...)
-		list := binary.BigEndian.AppendUint16(nil, uint16(len(name)))
+		list := binary.BigEndian.AppendUint16(nil, wire.Len16(len(name)))
 		ext = appendExt(ext, 0x0000, append(list, name...)) // server_name
 	}
 	ext = appendExt(ext, 0x000a, []byte{0, 6, 0x00, 0x17, 0x00, 0x18, 0x00, 0x1d})             // supported_groups
@@ -68,21 +73,26 @@ func clientHello(serverName string) []byte {
 	_, _ = rand.Read(random)
 	body = append(body, random...)
 	body = append(body, 0) // session id
-	body = binary.BigEndian.AppendUint16(body, uint16(2*len(offeredSuites)))
+	body = binary.BigEndian.AppendUint16(body, wire.Len16(2*len(offeredSuites)))
 	for _, s := range offeredSuites {
 		body = binary.BigEndian.AppendUint16(body, s)
 	}
 	body = append(body, 1, 0) // compression: null
-	body = binary.BigEndian.AppendUint16(body, uint16(len(ext)))
+	body = binary.BigEndian.AppendUint16(body, wire.Len16(len(ext)))
 	body = append(body, ext...)
 
-	hs := append([]byte{1, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}, body...)
-	return append([]byte{recHandshake, 0x03, 0x01, byte(len(hs) >> 8), byte(len(hs))}, hs...)
+	// Handshake length (24 bits) and record length: the hello is far
+	// below both limits.
+	hs := binary.BigEndian.AppendUint32(nil, uint32(wire.Len16(len(body))))
+	hs[0] = 1 // client_hello, over the zero high octet
+	hs = append(hs, body...)
+	rec := binary.BigEndian.AppendUint16([]byte{recHandshake, 0x03, 0x01}, wire.Len16(len(hs)))
+	return append(rec, hs...)
 }
 
 func appendExt(b []byte, typ uint16, data []byte) []byte {
 	b = binary.BigEndian.AppendUint16(b, typ)
-	b = binary.BigEndian.AppendUint16(b, uint16(len(data)))
+	b = binary.BigEndian.AppendUint16(b, wire.Len16(len(data)))
 	return append(b, data...)
 }
 

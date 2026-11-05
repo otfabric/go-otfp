@@ -19,6 +19,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/fpx"
@@ -262,7 +263,7 @@ func propertyOf(a apdu) uint32 {
 func bvlc(fn byte, npdu []byte) []byte {
 	b := []byte{bvlcType, fn, 0, 0}
 	b = append(b, npdu...)
-	binary.BigEndian.PutUint16(b[2:4], uint16(len(b)))
+	binary.BigEndian.PutUint16(b[2:4], wire.Len16(len(b)))
 	return b
 }
 
@@ -282,18 +283,11 @@ func whoIs() []byte {
 // contextUnsigned encodes a context-tagged unsigned value with the minimum
 // octets.
 func contextUnsigned(tag byte, v uint32) []byte {
-	var val []byte
-	switch {
-	case v <= 0xFF:
-		val = []byte{byte(v)}
-	case v <= 0xFFFF:
-		val = []byte{byte(v >> 8), byte(v)}
-	case v <= 0xFFFFFF:
-		val = []byte{byte(v >> 16), byte(v >> 8), byte(v)}
-	default:
-		val = []byte{byte(v >> 24), byte(v >> 16), byte(v >> 8), byte(v)}
+	val := binary.BigEndian.AppendUint32(nil, v)
+	for len(val) > 1 && val[0] == 0 {
+		val = val[1:]
 	}
-	return append([]byte{tag<<4 | 0x08 | byte(len(val))}, val...)
+	return append([]byte{tag<<4 | 0x08 | wire.Len8(len(val))}, val...)
 }
 
 // ---- decoders ----
@@ -564,7 +558,9 @@ func parseIAm(apduBytes []byte) (instance uint32, vendor uint32, ok bool) {
 	if len(p) >= 1 && p[0]&0x08 == 0 {
 		lv := int(p[0] & 0x07)
 		if 1+lv <= len(p) {
-			if v, good := unsignedTag(p[1 : 1+lv]); good {
+			// A value wider than 32 bits is not a vendor identifier
+			// (an Unsigned16); do not report it truncated.
+			if v, good := unsignedTag(p[1 : 1+lv]); good && v <= math.MaxUint32 {
 				vendor = uint32(v)
 			}
 		}

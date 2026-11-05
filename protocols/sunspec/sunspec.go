@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -197,11 +198,16 @@ func (f *Fingerprinter) findMarker(ctx context.Context, r *reader) (base uint16,
 }
 
 func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, r *reader, fc byte, base uint16) {
-	addr := uint32(base) + 2
-	regs, _, err := r.read("model1", fc, uint16(addr), 68)
+	if base > math.MaxUint16-2 {
+		// The marker fills the last registers: no model follows it.
+		b.Evidence("no register after the marker")
+		return
+	}
+	addr := base + 2
+	regs, _, err := r.read("model1", fc, addr, 68)
 	if err != nil {
 		// Some devices reject long reads: fall back to the header.
-		regs, _, err = r.read("model1-header", fc, uint16(addr), 2)
+		regs, _, err = r.read("model1-header", fc, addr, 2)
 	}
 	if err != nil {
 		b.Evidence("common model not readable")
@@ -223,21 +229,22 @@ func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, r *reader,
 	// Walk the model chain.
 	for i := 0; i < maxModels && ctx.Err() == nil; i++ {
 		if i > 0 {
-			hdr, _, err := r.read(fmt.Sprintf("model-%d", i), fc, uint16(addr), 2)
+			hdr, _, err := r.read(fmt.Sprintf("model-%d", i), fc, addr, 2)
 			if err != nil {
 				break
 			}
 			regs = hdr
 		}
-		if regs[0] == endModel || addr > 0xFFFF-2 {
+		if regs[0] == endModel || addr > math.MaxUint16-2 {
 			models = append(models, "end")
 			break
 		}
 		models = append(models, strconv.Itoa(int(regs[0])))
-		addr += 2 + uint32(regs[1])
-		if addr > 0xFFFF {
+		next := uint32(addr) + 2 + uint32(regs[1])
+		if next > math.MaxUint16 {
 			break
 		}
+		addr = uint16(next)
 	}
 	if len(models) > 0 {
 		b.Identity().Set("models", strings.Join(models, ","))
@@ -261,7 +268,7 @@ func Common(body []uint16) CommonModel {
 		var sb strings.Builder
 		for _, r := range body[off : off+n] {
 			sb.WriteByte(byte(r >> 8))
-			sb.WriteByte(byte(r))
+			sb.WriteByte(byte(r & 0xFF))
 		}
 		return fpx.Clean(sb.String())
 	}

@@ -19,6 +19,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -169,7 +170,7 @@ func message(typ string, body []byte) []byte {
 	b := make([]byte, 8+len(body))
 	copy(b, typ)
 	b[3] = chunkF
-	binary.LittleEndian.PutUint32(b[4:], uint32(len(b)))
+	binary.LittleEndian.PutUint32(b[4:], wire.Len32(len(b)))
 	copy(b[8:], body)
 	return b
 }
@@ -230,16 +231,28 @@ func parseError(body []byte) (uint32, string) {
 
 func le32(b []byte, v uint32) []byte { return binary.LittleEndian.AppendUint32(b, v) }
 
+// int32LE decodes the little-endian Int32 at the start of p (an array or
+// string length, negative for null) in two's complement.
+func int32LE(p []byte) int32 {
+	v := binary.LittleEndian.Uint32(p)
+	if v <= math.MaxInt32 {
+		return int32(v)
+	}
+	return -int32(^v&math.MaxInt32) - 1
+}
+
 func str(b []byte, s string) []byte {
 	if s == "" {
 		return le32(b, 0xFFFFFFFF)
 	}
-	b = le32(b, uint32(len(s)))
+	b = le32(b, wire.Len32(len(s)))
 	return append(b, s...)
 }
 
 // fourByteNodeID encodes a numeric node identifier in namespace 0.
-func fourByteNodeID(id uint16) []byte { return []byte{0x01, 0x00, byte(id), byte(id >> 8)} }
+func fourByteNodeID(id uint16) []byte {
+	return binary.LittleEndian.AppendUint16([]byte{0x01, 0x00}, id)
+}
 
 // requestHeader encodes a minimal RequestHeader with a null authentication
 // token and the given timeout.
@@ -380,7 +393,7 @@ func skipResponseHeader(b []byte) []byte {
 	if len(p) < 4 {
 		return nil
 	}
-	n := int32(binary.LittleEndian.Uint32(p))
+	n := int32LE(p)
 	p = p[4:]
 	if n > 0 {
 		for range n {
@@ -431,7 +444,7 @@ func parseEndpoints(resp []byte) ([]endpoint, error) {
 	if len(p) < 4 {
 		return nil, fmt.Errorf("no endpoint array")
 	}
-	n := int32(binary.LittleEndian.Uint32(p))
+	n := int32LE(p)
 	p = p[4:]
 	if n < 0 || n > 64 {
 		return nil, fmt.Errorf("endpoint count %d", n)
@@ -517,7 +530,7 @@ func skipUserTokenPolicies(p []byte) ([]byte, bool) {
 	if len(p) < 4 {
 		return nil, false
 	}
-	n := int32(binary.LittleEndian.Uint32(p))
+	n := int32LE(p)
 	p = p[4:]
 	if n < 0 {
 		return p, true
@@ -546,7 +559,7 @@ func skipStringArray(p []byte) ([]byte, bool) {
 	if len(p) < 4 {
 		return nil, false
 	}
-	n := int32(binary.LittleEndian.Uint32(p))
+	n := int32LE(p)
 	p = p[4:]
 	if n < 0 {
 		return p, true
@@ -564,7 +577,7 @@ func getBytes(p []byte) ([]byte, []byte, bool) {
 	if len(p) < 4 {
 		return nil, nil, false
 	}
-	n := int32(binary.LittleEndian.Uint32(p))
+	n := int32LE(p)
 	p = p[4:]
 	if n < 0 { // null
 		return nil, p, true

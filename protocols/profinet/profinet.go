@@ -190,7 +190,7 @@ func readImplicit(activity uuidT, index uint16) []byte {
 	binary.LittleEndian.PutUint16(b[68:70], opReadImplicit)
 	binary.LittleEndian.PutUint16(b[70:72], 0xFFFF) // interface hint
 	binary.LittleEndian.PutUint16(b[72:74], 0xFFFF) // activity hint
-	binary.LittleEndian.PutUint16(b[74:76], uint16(len(body)))
+	binary.LittleEndian.PutUint16(b[74:76], wire.Len16(len(body)))
 	binary.LittleEndian.PutUint16(b[76:78], 0) // fragment number
 	b[78] = 0                                  // auth protocol
 	b[79] = 0                                  // serial low
@@ -200,10 +200,10 @@ func readImplicit(activity uuidT, index uint16) []byte {
 func appendNDRRequest(b, blocks []byte) []byte {
 	const argsMax = 16696
 	b = binary.LittleEndian.AppendUint32(b, argsMax)
-	b = binary.LittleEndian.AppendUint32(b, uint32(len(blocks)))
+	b = binary.LittleEndian.AppendUint32(b, wire.Len32(len(blocks)))
 	b = binary.LittleEndian.AppendUint32(b, argsMax)
 	b = binary.LittleEndian.AppendUint32(b, 0)
-	b = binary.LittleEndian.AppendUint32(b, uint32(len(blocks)))
+	b = binary.LittleEndian.AppendUint32(b, wire.Len32(len(blocks)))
 	return append(b, blocks...)
 }
 
@@ -220,11 +220,11 @@ func readReqBlock(index uint16) []byte {
 	b = append(b, 0x00, 0x00)             // slot
 	b = append(b, 0x00, 0x01)             // subslot
 	b = append(b, 0x00, 0x00)             // padding
-	b = append(b, byte(index>>8), byte(index))
+	b = binary.BigEndian.AppendUint16(b, index)
 	b = append(b, 0x00, 0x00, 0x10, 0x00) // record data length (4096)
 	b = append(b, make([]byte, 16)...)    // target ARUUID (nil)
 	b = append(b, make([]byte, 8)...)     // reserved
-	binary.BigEndian.PutUint16(b[2:], uint16(len(b)-4))
+	binary.BigEndian.PutUint16(b[2:], wire.Len16(len(b)-4))
 	return b
 }
 
@@ -262,10 +262,10 @@ func ndrBlocks(body []byte) ([]byte, error) {
 	}
 	actual := binary.LittleEndian.Uint32(body[16:])
 	rest := body[ndrHeaderLen:]
-	if int64(actual) > int64(len(rest)) {
-		actual = uint32(len(rest))
+	if int64(actual) < int64(len(rest)) {
+		rest = rest[:actual]
 	}
-	return rest[:actual], nil
+	return rest, nil
 }
 
 type im0 struct {

@@ -17,6 +17,7 @@ package mms
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 
@@ -121,6 +122,10 @@ func (f *Fingerprinter) Info() core.Info {
 
 // Detect probes target.
 func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
+	if len(f.calling)+len(f.called) > iso.MaxTSELs {
+		return core.NoMatch(proto), &core.DetectError{Protocol: proto, Op: "cotp-cr",
+			Err: fmt.Errorf("TSELs of %d and %d octets exceed the %d a COTP CR carries", len(f.calling), len(f.called), iso.MaxTSELs)}
+	}
 	b := fpx.New(proto)
 	s, err := wire.Dial(ctx, proto, target, opts)
 	if err != nil {
@@ -319,14 +324,18 @@ func spduParam(b []byte) (code byte, val, rest []byte, ok bool) {
 // tlv encodes a BER TLV with a one-octet tag.
 func tlv(tag byte, v []byte) []byte {
 	out := []byte{tag}
-	switch n := len(v); {
-	case n < 0x80:
-		out = append(out, byte(n))
-	case n < 0x100:
-		out = append(out, 0x81, byte(n))
-	default:
-		out = append(out, 0x82, byte(n>>8), byte(n))
+	n := len(v)
+	if n < 0x80 {
+		return append(append(out, byte(n)), v...)
 	}
+	// Long form: 0x80 | the number of length octets, then the length
+	// big-endian in as few octets as it needs.
+	l := binary.BigEndian.AppendUint64(nil, uint64(n))
+	for l[0] == 0 {
+		l = l[1:]
+	}
+	out = append(out, 0x80|wire.Len8(len(l)))
+	out = append(out, l...)
 	return append(out, v...)
 }
 

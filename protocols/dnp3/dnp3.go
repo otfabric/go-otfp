@@ -285,9 +285,20 @@ func ParseHeader(b []byte) (Header, error) {
 	return h, nil
 }
 
-// Frame encodes a data-link frame.
+// maxFrameData is the most user data one data-link frame carries: the
+// one-octet LEN field counts the control and address octets too.
+const maxFrameData = 255 - 5
+
+// Frame encodes a data-link frame. It panics when data is longer than
+// 250 octets (maxFrameData), which no frame can carry.
 func Frame(ctrl byte, dst, src uint16, data []byte) []byte {
-	b := []byte{start0, start1, byte(5 + len(data)), ctrl, byte(dst), byte(dst >> 8), byte(src), byte(src >> 8)}
+	n := 5 + len(data)
+	if n > 0xFF {
+		panic(fmt.Sprintf("dnp3: %d octets of user data exceed one data-link frame (%d)", len(data), maxFrameData))
+	}
+	b := []byte{start0, start1, byte(n), ctrl}
+	b = binary.LittleEndian.AppendUint16(b, dst)
+	b = binary.LittleEndian.AppendUint16(b, src)
 	b = binary.LittleEndian.AppendUint16(b, CRC(b))
 	for len(data) > 0 {
 		k := min(16, len(data))

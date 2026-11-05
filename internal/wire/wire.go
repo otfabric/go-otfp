@@ -10,7 +10,9 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"net"
 	"time"
 
@@ -341,4 +343,32 @@ func isReset(err error) bool {
 		return !op.Timeout() && op.Op == "read"
 	}
 	return false
+}
+
+// Len8, Len16 and Len32 return n for a length field of a frame the probes
+// build. Those frames are made of the probes' own fixed fields, so a
+// length out of range is a programming error: they panic rather than put a
+// wrapped length on the wire. Lengths that depend on input are checked by
+// the caller before they get here.
+func Len8(n int) uint8 {
+	if n < 0 || n > math.MaxUint8 {
+		panic(fmt.Sprintf("wire: length %d does not fit an 8-bit field", n))
+	}
+	return uint8(n)
+}
+
+// Len16 is Len8 for a 16-bit field.
+func Len16(n int) uint16 {
+	if n < 0 || n > math.MaxUint16 {
+		panic(fmt.Sprintf("wire: length %d does not fit a 16-bit field", n))
+	}
+	return uint16(n)
+}
+
+// Len32 is Len8 for a 32-bit field.
+func Len32(n int) uint32 {
+	if n < 0 || int64(n) > math.MaxUint32 {
+		panic(fmt.Sprintf("wire: length %d does not fit a 32-bit field", n))
+	}
+	return uint32(n)
 }
