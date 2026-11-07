@@ -3,7 +3,7 @@
 # thanks to https://marmelab.com/blog/2016/02/29/auto-documented-makefile.html
 
 .DEFAULT_GOAL := help
-.PHONY: help all build examples stress release-notes install fmt fmt-check lint lint-ci vet vuln test test-race coverage cover bench fuzz generate generate-check check clean interop test-interop coverage-check cross e2e coverage-pkg-check
+.PHONY: help all build examples stress release-notes install fmt fmt-check lint lint-ci vet vuln test test-race coverage cover bench fuzz generate generate-check check clean interop test-interop coverage-check cross e2e coverage-pkg-check docs-check
 
 help: ## This help
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z0-9_-]+:.*?## / {printf "\033[36m%-30s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -25,6 +25,9 @@ PKGS := $(shell go list ./...)
 COVER_PKGS := $(shell go list ./... | grep -vE '/cmd/|/internal/cmd|/internal/testsrv|/internal/fuzzkit|/internal/chaos|/examples|/e2e' | paste -sd, -)
 TEST_PKGS := $(shell go list ./... | grep -vE '/interop|/examples')
 INTEROP_TAGS := interop
+
+# docsync release of docs-check (DOC-008).
+DOCSYNC_VERSION := v0.2.0
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 TAG := $(shell git describe --tags --exact-match 2>/dev/null || echo "")
@@ -159,7 +162,11 @@ cross: ## Cross-compile without cgo for the supported platforms
 e2e: ## End-to-end suite: the public engine against scripted servers on loopback TCP
 	@go test -count=1 -race ./e2e/...
 
-check: coverpkg-check fmt fmt-check lint lint-ci vet vuln test-race coverage coverage-pkg-check examples ## Run format + lint + vet + vuln + tests
+check: coverpkg-check fmt fmt-check lint lint-ci vet vuln test-race coverage coverage-pkg-check examples docs-check ## Run format + lint + vet + vuln + tests
+
+# The documents against the code (DOC-008): docsync, as docs-check.yml runs it.
+docs-check: ## Check that the documents agree with the code (docsync)
+	@go run github.com/otfabric/docsync@$(DOCSYNC_VERSION) check .
 
 test-interop: ## Run the interop suite against the pinned reference servers (needs Docker)
 	@echo "Running interop tests (go-<protocol> reference images)"
