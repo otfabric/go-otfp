@@ -3,48 +3,41 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
-	"runtime"
 
 	"github.com/spf13/cobra"
 )
 
-var versionFormats = []string{"text", "json"}
+// versionFormats: table prints the text line, so that OTPROBE_OUTPUT_FORMAT
+// set for the other commands applies here too.
+var versionFormats = []string{"text", "json", "table"}
 
 func versionCommand(stdout io.Writer) *cobra.Command {
 	var format string
+	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
-		Args:  cobra.NoArgs,
+		Long: `Print the version, release tag, commit, build date, Go version and platform
+on one line, or as one line of JSON with --json (or --format json).`,
+		Args: cobra.NoArgs,
 		RunE: func(*cobra.Command, []string) error {
 			if err := checkFormat(format, versionFormats...); err != nil {
 				return err
 			}
-			v := version
-			if tag != "" {
-				v = tag
+			info := currentBuildInfo()
+			line := info.Text()
+			if asJSON || format == "json" {
+				line = info.JSON()
 			}
-			var err error
-			if format == "json" {
-				enc := json.NewEncoder(stdout)
-				enc.SetIndent("", "  ")
-				err = enc.Encode(map[string]string{
-					"version": v, "commit": commit, "buildDate": buildDate,
-					"go": runtime.Version(), "platform": runtime.GOOS + "/" + runtime.GOARCH,
-				})
-			} else {
-				_, err = fmt.Fprintf(stdout, "otprobe %s (commit %s, built %s, %s %s/%s)\n",
-					v, commit, buildDate, runtime.Version(), runtime.GOOS, runtime.GOARCH)
-			}
-			if err != nil {
+			if _, err := fmt.Fprintln(stdout, line); err != nil {
 				return fail(kindOutput, codeOutputFailed, "write output: %v", err)
 			}
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print the version information as one line of JSON")
 	formatFlag(cmd, &format, versionFormats...)
 	return cmd
 }

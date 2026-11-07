@@ -18,15 +18,10 @@ func completionCommand(root *cobra.Command, stdout io.Writer) *cobra.Command {
 	return &cobra.Command{
 		Use:   "completion bash|zsh|fish|powershell",
 		Short: "Generate the shell completion script",
-		Long: `Generate the completion script for your shell. It completes commands, flags
-and flag values: protocol names for --protocol and --exclude, formats,
-networks, well-known ports, and target schemes.
-
-  bash:        source <(otprobe completion bash)
-               (permanently: otprobe completion bash > /etc/bash_completion.d/otprobe)
-  zsh:         otprobe completion zsh > "${fpath[1]}/_otprobe"   (then restart the shell)
-  fish:        otprobe completion fish > ~/.config/fish/completions/otprobe.fish
-  powershell:  otprobe completion powershell | Out-String | Invoke-Expression`,
+		Long: `Generate the completion script for bash, zsh, fish or powershell. It
+completes commands, flags and flag values: protocol names for --protocol and
+--exclude, output formats, networks, well-known ports, and target schemes.
+How to install it is in the README (Shell completion).`,
 		Args:                  cobra.ExactArgs(1),
 		ValidArgs:             []string{"bash", "zsh", "fish", "powershell"},
 		DisableFlagsInUseLine: true,

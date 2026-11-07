@@ -29,10 +29,13 @@ INTEROP_TAGS := interop
 # docsync release of docs-check (DOC-008).
 DOCSYNC_VERSION := v0.3.1
 
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+# Build information for `otprobe version`, as the release workflow injects it:
+# the version without its leading v, the exact tag (empty off a tag), the full
+# commit SHA and an RFC 3339 UTC build date.
+VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 TAG := $(shell git describe --tags --exact-match 2>/dev/null || echo "")
-COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-BUILD_DATE := $(shell date -u +%Y%m%d-%H:%M:%S)
+COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.tag=$(TAG) -X main.commit=$(COMMIT) -X main.buildDate=$(BUILD_DATE)
 
 all: build ## Default target: build the otprobe binary

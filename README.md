@@ -88,9 +88,27 @@ irm https://get.otfabric.io/otprobe.ps1 | iex
 
 Linux (amd64, arm64, armv7), macOS (Intel, Apple silicon) and Windows (amd64, arm64). The installer verifies the release's SHA-256 checksum, installs per user without `sudo` (`~/.local/bin`, Windows `%LOCALAPPDATA%\OTFabric\bin`), and upgrades in place when run again. Pin a version with `OTF_VERSION=x.y.z`; for CI, containers and device images use `OTF_UNMANAGED_INSTALL=<dir>`; all options: [otfabric/install](https://github.com/otfabric/install#options). `OTF_VERSION` is the version of go-otfp, which ships `otprobe`. For offline machines, the archives and checksums are on [Releases](https://github.com/otfabric/go-otfp/releases).
 
-#### Shell completion
+### Shell completion
 
-`otprobe completion bash|zsh|fish|powershell` prints a completion script for commands, flags, protocol slugs and ports, for example `otprobe completion zsh > "${fpath[1]}/_otprobe"`. See [cmd/otprobe/docs/cli.md](cmd/otprobe/docs/cli.md#shell-completion).
+`otprobe completion` completes commands, flags and flag values: protocol slugs, output formats, networks, well-known ports and target schemes.
+
+```bash
+# bash (needs the bash-completion package)
+mkdir -p ~/.local/share/bash-completion/completions
+otprobe completion bash > ~/.local/share/bash-completion/completions/otprobe
+
+# zsh: a directory on your fpath, then restart the shell
+mkdir -p ~/.zsh/completions && otprobe completion zsh > ~/.zsh/completions/_otprobe
+# and once in ~/.zshrc:  fpath=(~/.zsh/completions $fpath); autoload -U compinit && compinit
+
+# fish
+mkdir -p ~/.config/fish/completions && otprobe completion fish > ~/.config/fish/completions/otprobe.fish
+```
+
+```powershell
+# PowerShell: add this line to your profile ($PROFILE)
+otprobe completion powershell | Out-String | Invoke-Expression
+```
 
 ## CLI — `otprobe`
 
@@ -123,7 +141,7 @@ otprobe detect tls://10.0.0.5:802           # over TLS (Modbus Security, wss://,
 otprobe detect 10.0.0.5 --safe              # sweep the well-known ports, OT-safe pacing
 otprobe detect 10.0.0.5:4840 -o table       # one row per probe; -o json for machines
 otprobe list                                # the protocols and their probes
-otprobe completion zsh > "${fpath[1]}/_otprobe"   # completion of commands, flags and values
+otprobe version --json                      # build information as one line of JSON
 ```
 
 Text is the default output; `--format table` and `--format json` (versioned

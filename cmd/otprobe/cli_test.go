@@ -158,6 +158,9 @@ func TestCompletion(t *testing.T) {
 		"__complete detect ":                            {"udp://\t"},
 		"__complete detect 1.2.3.4:5 --ide":             {"--identify"},
 		"__complete completion ":                        {"bash", "zsh", "fish", "powershell"},
+		"__complete list --format ":                     {"text", "json", "table"},
+		"__complete version --format ":                  {"text", "json", "table"},
+		"__complete version --j":                        {"--json"},
 		"__complete ":                                   {"detect", "list", "version", "completion"},
 	}
 	for line, wants := range cases {
@@ -189,10 +192,26 @@ func TestListAndVersion(t *testing.T) {
 			t.Errorf("list %s: %d %s", f, code, out)
 		}
 	}
-	_, out, _ = exec("version", "-o", "json")
-	var v map[string]string
-	if json.Unmarshal([]byte(out), &v) != nil || v["version"] == "" || v["go"] == "" {
-		t.Fatalf("version json: %s", out)
+	for _, args := range [][]string{{"version", "-o", "json"}, {"version", "--json"}} {
+		code, out, _ := exec(args...)
+		var v map[string]string
+		if code != 0 || strings.Count(out, "\n") != 1 || json.Unmarshal([]byte(out), &v) != nil || v["name"] != "otprobe" || v["version"] == "" || v["go"] == "" {
+			t.Fatalf("%v: exit %d: %s", args, code, out)
+		}
+	}
+	for _, args := range [][]string{{"version"}, {"version", "-o", "table"}, {"version", "-o", "text"}} {
+		code, out, _ := exec(args...)
+		if code != 0 || !strings.HasPrefix(out, "otprobe ") || strings.Count(out, "\n") != 1 || strings.HasPrefix(out, "{") {
+			t.Fatalf("%v: exit %d: %s", args, code, out)
+		}
+	}
+}
+
+func TestVersionFormatEnv(t *testing.T) {
+	t.Setenv(formatEnv, "json")
+	code, out, _ := exec("version")
+	if code != 0 || !strings.HasPrefix(out, `{"name":"otprobe",`) {
+		t.Fatalf("exit %d: %s", code, out)
 	}
 }
 
