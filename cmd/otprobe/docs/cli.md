@@ -3,7 +3,7 @@
 `otprobe` wraps the go-otfp library for the shell. Every example on this page
 is real output, captured from `otprobe` running against the reference
 servers of the otfabric `*-interop` suites (the same pinned images the
-[interop tests](../INTEROPERABILITY.md) use), published on their well-known
+[interop tests](../../../INTEROPERABILITY.md) use), published on their well-known
 ports on 127.0.0.1.
 
 - [Commands](#commands)
@@ -573,7 +573,7 @@ $ otprobe completion powershell | Out-String | Invoke-Expression
 
 What the shell receives (cobra's completion protocol):
 
-```console
+```text
 $ otprobe __complete detect 10.0.0.5:502 --protocol mo
 modbus	Modbus TCP
 mms	IEC 61850 MMS
@@ -596,7 +596,7 @@ canopen	CANopen (CiA 309-3 gateway)
 :6
 ```
 
-```console
+```text
 $ otprobe __complete detect 10.0.0.5:502 --format 
 text
 json

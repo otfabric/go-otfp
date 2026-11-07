@@ -202,7 +202,7 @@ Run the same commands again. They always fetch the latest release and overwrite 
 
 #### Shell completion
 
-`otprobe completion bash|zsh|fish|powershell` prints a completion script for commands, flags, protocol slugs and ports, for example `otprobe completion zsh > "${fpath[1]}/_otprobe"`. See [docs/cli.md](docs/cli.md#shell-completion).
+`otprobe completion bash|zsh|fish|powershell` prints a completion script for commands, flags, protocol slugs and ports, for example `otprobe completion zsh > "${fpath[1]}/_otprobe"`. See [cmd/otprobe/docs/cli.md](cmd/otprobe/docs/cli.md#shell-completion).
 
 #### Build from source
 
@@ -260,9 +260,9 @@ Text is the default output; `--format table` and `--format json` (versioned
 schema) are available on every command. Exit codes are stable for scripts:
 `0` detected, `1` no match, `2` usage, `3` invalid input, `4` unreachable,
 `5` timeout, `7` matched below high confidence, `10` interrupted. The full
-reference with real output for every protocol is [docs/cli.md](docs/cli.md);
-see also [docs/exitcodes.md](docs/exitcodes.md) and
-[docs/json-output.md](docs/json-output.md).
+reference with real output for every protocol is [cmd/otprobe/docs/cli.md](cmd/otprobe/docs/cli.md);
+see also [cmd/otprobe/docs/exitcodes.md](cmd/otprobe/docs/exitcodes.md) and
+[cmd/otprobe/docs/json-output.md](cmd/otprobe/docs/json-output.md).
 
 ## Library
 
@@ -376,6 +376,7 @@ Beyond unit tests, the suite hunts for bugs in four ways:
 - [OBSERVABILITY.md](OBSERVABILITY.md) — logging, the Observer and tracing
 - [INTEROPERABILITY.md](INTEROPERABILITY.md) — the reference servers and how they are pinned
 - [LIMITATIONS.md](LIMITATIONS.md) — what the probes do not cover
+- [cmd/otprobe/README.md](cmd/otprobe/README.md) — the CLI: commands, exit codes, JSON output
 - [SECURITY.md](SECURITY.md) — safe use in OT networks and reporting issues
 - [CONTRIBUTING.md](CONTRIBUTING.md) · [RELEASE.md](RELEASE.md)
 

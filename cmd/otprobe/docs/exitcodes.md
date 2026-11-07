@@ -10,8 +10,8 @@ parse.
 
 | Code | Meaning |
 |------|---------|
-| 0 | Detected: a protocol matched at high confidence (≥ 0.90) on at least one scanned port |
-| 1 | No match: the target answered, but no protocol matched |
+| 0 | Success, detected: a protocol matched at high confidence (≥ 0.90) on at least one scanned port |
+| 1 | Finding, no match: the scan completed; the target answered, but no protocol matched |
 | 2 | Usage (`usage`): unknown command or flag, a missing or extra argument, a value a flag cannot hold |
 | 3 | Invalid input (`invalid_input`): a target, protocol name, format or flag combination that does not make sense. Nothing was sent |
 | 4 | Transport: nothing answered and the target refused or could not be reached |

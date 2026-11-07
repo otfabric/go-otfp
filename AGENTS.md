@@ -14,7 +14,7 @@ This repository follows **otfabric/engineering policy 1.2**, profile **protocol-
 |---|---|
 | Probes, confidence, standards per detector | FINGERPRINTS.md |
 | What was validated, against what | INTEROPERABILITY.md, LIMITATIONS.md |
-| CLI contract | docs/cli.md, docs/exitcodes.md, docs/json-output.md |
+| CLI contract | cmd/otprobe/docs/cli.md, cmd/otprobe/docs/exitcodes.md, cmd/otprobe/docs/json-output.md |
 | Errors | ERRORS.md |
 | Release history | RELEASE.md (`## vX.Y.Z` … `---`) |
 

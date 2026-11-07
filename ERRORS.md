@@ -68,4 +68,4 @@ its own I/O, and the helpers `core.ClassifyDial(protocol, addr, err)` and
 `2` usage, `3` invalid input, `4` unreachable, `5` timeout, `7` partial,
 `10` interrupted or internal — and renders fatal errors as one `error:` line,
 or one JSON `error` object with `--format json`. See
-[docs/exitcodes.md](docs/exitcodes.md).
+[cmd/otprobe/docs/exitcodes.md](cmd/otprobe/docs/exitcodes.md).

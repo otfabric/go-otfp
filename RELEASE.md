@@ -134,14 +134,14 @@ the public API changed substantially — review before upgrading.
   `version` and `completion bash|zsh|fish|powershell` (commands, flags and
   flag values: protocols, formats, networks, ports, schemes). Text output by
   default; `--format table|json` on every command, with a versioned JSON
-  schema ([docs/json-output.md](docs/json-output.md)) and fatal errors as one
+  schema ([cmd/otprobe/docs/json-output.md](cmd/otprobe/docs/json-output.md)) and fatal errors as one
   JSON object. Exit codes follow the OT Fabric CLI convention: 0 detected, 1
   no match, 2 usage, 3 invalid input, 4 unreachable, 5 timeout, 7 partial, 10
-  interrupted ([docs/exitcodes.md](docs/exitcodes.md)).
+  interrupted ([cmd/otprobe/docs/exitcodes.md](cmd/otprobe/docs/exitcodes.md)).
 - **Examples:** runnable programs in `examples/` (quickstart, identify,
   sweep, custom fingerprinter, observability) that work offline against a
   demo device, `Example` functions for pkg.go.dev, and a CLI reference with
-  real output for every protocol ([docs/cli.md](docs/cli.md)).
+  real output for every protocol ([cmd/otprobe/docs/cli.md](cmd/otprobe/docs/cli.md)).
 - **Bug-hunting test suite:** end-to-end fuzzing of every fingerprinter
   (`FuzzDetect`, checking the Fingerprinter contract on every result),
   hostile-server tests (silent, slow-drip, garbage, closing), concurrent use
