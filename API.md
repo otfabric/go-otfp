@@ -179,7 +179,12 @@ applies (`ErrNoFingerprinters`); per-protocol failures are in `Results`.
 
 ```go
 type Observer interface { OnStart(Protocol, Target); OnResult(Result) }
-type Logger   interface { Debugf, Infof, Warnf, Errorf(string, ...any) }
+type Logger interface {
+	Debugf(format string, args ...any)
+	Infof(format string, args ...any)
+	Warnf(format string, args ...any)
+	Errorf(format string, args ...any)
+}
 func NopLogger() Logger
 func NewSlogLogger(slog.Handler) Logger
 ```

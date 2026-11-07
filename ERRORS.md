@@ -47,6 +47,14 @@ protocol and, where relevant, the address and operation.
   no registered fingerprinter (for the target's transport).
 - **`ErrNoFingerprinters`** — `Scan` found no applicable fingerprinter.
 
+## Protocol package errors
+
+- **`mqtt.NotConnackError`** — returned by `mqtt.Client.Connect` when the
+  reply to a CONNECT is not a valid CONNACK for the requested level. `Reply`
+  holds the bytes that arrived and `Err` (also `Unwrap`) why they are not a
+  CONNACK. The MQTT fingerprinter consumes it to score MQTT-shaped replies
+  and reports a `no CONNACK` result instead of returning it.
+
 ## Classifying transport failures
 
 Fingerprinter authors do not build these by hand. `wire.Session` classifies
