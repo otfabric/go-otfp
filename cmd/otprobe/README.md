@@ -6,7 +6,7 @@ writes, controls or reconfigures a device.
 
 This directory is its own Go module (`github.com/otfabric/go-otfp/cmd/otprobe`).
 Installation, release binaries and shell completion are described in the
-[repository README](../../README.md#cli--otprobe).
+[repository README](../../README.md#install-otprobe).
 
 | Document | Contents |
 |---|---|
