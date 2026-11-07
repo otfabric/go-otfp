@@ -3,6 +3,27 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## v0.4.0
+
+**Date:** unreleased
+**Previous release:** v0.3.1
+
+### Breaking
+
+- `otprobe` exit codes converge on the OT Fabric organisation table (engineering `standards/api-design.md`; [cmd/otprobe/docs/exitcodes.md](cmd/otprobe/docs/exitcodes.md)). Old → new:
+  - interrupted by SIGINT/SIGTERM: `10` → `130`; the JSON error `kind` is `interrupted` (was `internal`), `code` still `context_canceled`.
+  - every probe failed with an I/O error other than a refusal or timeout (connection reset, TLS handshake failure): `1` → `4` (`5` → `4` when the others timed out).
+  - `--deadline` ended the scan before anything matched or answered: `1` → `5`.
+  - every fingerprinter failed unexpectedly (a panic the engine reports): `1` → `10`.
+  - text or `list` output that could not be written: the scan's outcome code (usually `0`) → `10`.
+  - `0` success, `1` findings (no match), `2` usage, `3` invalid input, `4` transport, `5` timeout and `7` partial are otherwise unchanged.
+
+### Changed
+
+- `otprobe` takes its root context from `signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)` and passes it to every command.
+
+---
+
 ## v0.3.1
 
 **Date:** 2026-11-05

@@ -5,11 +5,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
+	"os/signal"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/spf13/cobra"
 )
@@ -25,10 +28,16 @@ var (
 // formatEnv sets the default --format of every command that has one.
 const formatEnv = "OTPROBE_OUTPUT_FORMAT"
 
-func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	code := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+	stop()
+	os.Exit(code)
+}
 
-// run executes the command line and returns the process exit code.
-func run(args []string, stdout, stderr io.Writer) int {
+// run executes the command line under ctx, whose cancellation is an
+// interrupt (exit 130), and returns the process exit code.
+func run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	root := &cobra.Command{
 		Use:   "otprobe",
 		Short: "Fingerprint OT protocols on a network endpoint",
@@ -50,9 +59,9 @@ read-only service. It never writes, controls or reconfigures a device.`,
 	root.AddCommand(detectCommand(stdout, stderr), listCommand(stdout), versionCommand(stdout), completionCommand(root, stdout))
 	root.CompletionOptions.DisableDefaultCmd = true // replaced by completionCommand
 
-	err := root.Execute()
+	err := root.ExecuteContext(ctx)
 	if err == nil {
-		return exitDetected
+		return exitOK
 	}
 	if st, ok := errors.AsType[*exitStatus](err); ok {
 		return st.code

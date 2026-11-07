@@ -487,14 +487,15 @@ The exit code says what happened; it is stable for scripts. Full table:
 
 | Code | Meaning |
 |---|---|
-| 0 | a protocol was detected at high confidence |
-| 1 | the target answered, but no protocol matched |
+| 0 | success: a protocol was detected at high confidence |
+| 1 | findings: the target answered, but no protocol matched |
 | 2 | usage: unknown command or flag, wrong number of arguments |
 | 3 | invalid input: a target, protocol, format or flag combination that does not make sense; nothing was sent |
-| 4 | the target could not be reached: refused, unreachable, TLS failure |
-| 5 | nothing answered in time |
-| 7 | a protocol matched, but below the high-confidence threshold |
-| 10 | interrupted, output could not be written, or an internal error |
+| 4 | transport: the target could not be reached: refused, unreachable, reset, TLS failure |
+| 5 | timeout: nothing answered in time, or `--deadline` ended the scan |
+| 7 | partial: a protocol matched, but below the high-confidence threshold |
+| 10 | internal: output could not be written, or an internal error |
+| 130 | interrupted by SIGINT/SIGTERM |
 
 ```console
 $ otprobe detect 127.0.0.1:8080 --protocol modbus,s7comm

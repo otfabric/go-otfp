@@ -259,7 +259,8 @@ otprobe completion zsh > "${fpath[1]}/_otprobe"   # completion of commands, flag
 Text is the default output; `--format table` and `--format json` (versioned
 schema) are available on every command. Exit codes are stable for scripts:
 `0` detected, `1` no match, `2` usage, `3` invalid input, `4` unreachable,
-`5` timeout, `7` matched below high confidence, `10` interrupted. The full
+`5` timeout, `7` matched below high confidence, `10` output or internal
+error, `130` interrupted (the organisation table). The full
 reference with real output for every protocol is [cmd/otprobe/docs/cli.md](cmd/otprobe/docs/cli.md);
 see also [cmd/otprobe/docs/exitcodes.md](cmd/otprobe/docs/exitcodes.md) and
 [cmd/otprobe/docs/json-output.md](cmd/otprobe/docs/json-output.md).

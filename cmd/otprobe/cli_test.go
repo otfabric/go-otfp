@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -19,7 +20,7 @@ import (
 // exec runs the CLI and returns the exit code, stdout and stderr.
 func exec(args ...string) (int, string, string) {
 	var out, errw bytes.Buffer
-	code := run(args, &out, &errw)
+	code := run(context.Background(), args, &out, &errw)
 	return code, out.String(), errw.String()
 }
 
@@ -47,8 +48,12 @@ func TestExitCodes(t *testing.T) {
 		args []string
 		want int
 	}{
-		{"detected", []string{"detect", addr(modbus(t)), "--protocol", "modbus"}, exitDetected},
-		{"no match", []string{"detect", addr(closer), "--protocol", "modbus"}, exitNoMatch},
+		{"detected", []string{"detect", addr(modbus(t)), "--protocol", "modbus"}, exitOK},
+		{"no match", []string{"detect", addr(closer), "--protocol", "modbus"}, exitFindings},
+		{"tls handshake failed", []string{"detect", "tls://" + addr(closer), "--protocol", "modbus"}, exitTransport},
+		{"deadline", []string{"detect", addr(silent), "--protocol", "modbus", "-t", "5s", "--deadline", "200ms"}, exitTimeout},
+		{"bad shell", []string{"completion", "tcsh"}, exitUsage},
+		{"timeout zero", []string{"detect", "127.0.0.1:1", "--timeout", "0"}, exitInvalidInput},
 		{"partial", []string{"detect", addr(dnp), "--protocol", "dnp3", "-t", "300ms"}, exitPartial},
 		{"refused", []string{"detect", addr(testsrv.Closed(t)), "--protocol", "modbus"}, exitTransport},
 		{"timeout", []string{"detect", addr(silent), "--protocol", "modbus", "-t", "200ms"}, exitTimeout},
@@ -75,7 +80,7 @@ func TestExitCodes(t *testing.T) {
 
 func TestTextOutput(t *testing.T) {
 	code, out, _ := exec("detect", addr(modbus(t)), "--protocol", "modbus", "--identify")
-	if code != exitDetected {
+	if code != exitOK {
 		t.Fatalf("exit %d", code)
 	}
 	for _, want := range []string{"Detected: Modbus TCP, confidence 1.00", "vendor       Acme", "fingerprint  modbus.fc43:", "1 probe in"} {
@@ -137,7 +142,7 @@ func TestJSONErrors(t *testing.T) {
 func TestSweep(t *testing.T) {
 	dev, closed := modbus(t), testsrv.Closed(t)
 	code, out, _ := exec("detect", "127.0.0.1", "--ports", fmt.Sprintf("%d,%d", closed.Port, dev.Port), "--protocol", "modbus")
-	if code != exitDetected || !strings.Contains(out, "Detected: Modbus TCP") || !strings.Contains(out, fmt.Sprintf("Closed:   %d", closed.Port)) {
+	if code != exitOK || !strings.Contains(out, "Detected: Modbus TCP") || !strings.Contains(out, fmt.Sprintf("Closed:   %d", closed.Port)) {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
 }
@@ -235,7 +240,7 @@ func TestCANopenNode(t *testing.T) {
 		return out, false
 	})
 	code, out, errw := exec("detect", addr(gw), "--protocol", "canopen", "--identify", "--canopen-node", "32", "-t", "500ms")
-	if code != exitDetected {
+	if code != exitOK {
 		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, out, errw)
 	}
 	mu.Lock()
