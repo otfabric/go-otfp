@@ -194,8 +194,8 @@ func TestListAndVersion(t *testing.T) {
 	}
 	for _, args := range [][]string{{"version", "-o", "json"}, {"version", "--json"}} {
 		code, out, _ := exec(args...)
-		var v map[string]string
-		if code != 0 || strings.Count(out, "\n") != 1 || json.Unmarshal([]byte(out), &v) != nil || v["name"] != "otprobe" || v["version"] == "" || v["go"] == "" {
+		var v map[string]any
+		if code != 0 || strings.Count(out, "\n") != 1 || json.Unmarshal([]byte(out), &v) != nil || v["name"] != "otprobe" || v["version"] == "" || v["go"] == "" || v["libraries"] == nil {
 			t.Fatalf("%v: exit %d: %s", args, code, out)
 		}
 	}

@@ -446,15 +446,19 @@ with `--json` or `--format json` (`--format table` prints the text line):
 $ otprobe version
 otprobe 0.5.0 (tag v0.5.0, commit 1802d0f9afe8642d1e278120b76fcdfac967cb9e, built 2026-11-07T15:41:49Z, go1.26.3, linux/amd64)
 $ otprobe version --json
-{"name":"otprobe","version":"0.5.0","tag":"v0.5.0","commit":"1802d0f9afe8642d1e278120b76fcdfac967cb9e","built":"2026-11-07T15:41:49Z","go":"go1.26.3","platform":"linux/amd64"}
+{"name":"otprobe","version":"0.5.0","tag":"v0.5.0","commit":"1802d0f9afe8642d1e278120b76fcdfac967cb9e","built":"2026-11-07T15:41:49Z","libraries":[],"go":"go1.26.3","platform":"linux/amd64"}
 $ echo $?
 0
 ```
 
 A build from source (`go build`, `go install`) without the release ldflags
-reports `dev` (or the module version of a `go install …@vX.Y.Z`), the
+reports `dev` (a `go install …@vX.Y.Z` reports that version; a
+pseudo-version or a `+dirty` version is `dev` too), the
 commit from the Go build information with `-dirty` for a modified tree, and
 `built unknown`; the `tag …,` part appears only for a release build.
+Other OT Fabric `go-*` libraries the binary is built on (not go-otfp
+itself) appear after `built …` as `go-x 1.2.3, ` and in the JSON
+`libraries` array (`[]` when there are none, as today).
 
 ## Tracing
 

@@ -10,9 +10,9 @@
 
 ### Changed
 
-- `otprobe version` prints the organisation's one-line format: `otprobe 0.5.0 (tag v0.5.0, commit <full sha>, built <RFC 3339 UTC>, go1.26.3, linux/amd64)`. The version has no leading `v`; the `tag …,` part appears only for a release build; the commit is the full SHA. A build without release ldflags reports `dev` (or the module version of `go install …@vX.Y.Z`), the commit from the Go build information (`-dirty` for a modified tree) and `built unknown`.
-- `otprobe version --format json` is one line with the keys `name`, `version`, `tag`, `commit`, `built`, `go`, `platform` in that order (was an indented object with `version`, `commit`, `buildDate`, `go`, `platform`). `--format table` (for example from `OTPROBE_OUTPUT_FORMAT=table`) prints the text line instead of failing.
-- `make build` injects the full commit SHA, an RFC 3339 build date and the version without `v`, as the release workflow does.
+- `otprobe version` prints the organisation's one-line format: `otprobe 0.5.0 (tag v0.5.0, commit <full sha>, built <RFC 3339 UTC>, go1.26.3, linux/amd64)`. The version has no leading `v`; the `tag …,` part appears only for a release build; the commit is the full SHA. A build without release ldflags reports `dev` (the module version for `go install …@vX.Y.Z`; a pseudo-version or `+dirty` version is `dev`), the commit from the Go build information (`-dirty` for a modified tree) and `built unknown`.
+- `otprobe version --format json` is one line with the keys `name`, `version`, `tag`, `commit`, `built`, `libraries`, `go`, `platform` in that order (`libraries`: the other OT Fabric `go-*` libraries the binary is built on, `[]` today; in text they follow `built …`) (was an indented object with `version`, `commit`, `buildDate`, `go`, `platform`). `--format table` (for example from `OTPROBE_OUTPUT_FORMAT=table`) prints the text line instead of failing.
+- `make build` injects the full commit SHA and an RFC 3339 build date, and the version (without `v`) and tag only when HEAD is exactly on a tag; otherwise the binary reports `dev`.
 
 ### Added
 

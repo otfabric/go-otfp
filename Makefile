@@ -30,10 +30,10 @@ INTEROP_TAGS := interop
 DOCSYNC_VERSION := v0.3.1
 
 # Build information for `otprobe version`, as the release workflow injects it:
-# the version without its leading v, the exact tag (empty off a tag), the full
-# commit SHA and an RFC 3339 UTC build date.
-VERSION := $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
+# on a tag, the version without its leading v and the tag; off a tag, dev and
+# no tag. Always the full commit SHA and an RFC 3339 UTC build date.
 TAG := $(shell git describe --tags --exact-match 2>/dev/null || echo "")
+VERSION := $(if $(TAG),$(patsubst v%,%,$(TAG)),dev)
 COMMIT := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X main.version=$(VERSION) -X main.tag=$(TAG) -X main.commit=$(COMMIT) -X main.buildDate=$(BUILD_DATE)

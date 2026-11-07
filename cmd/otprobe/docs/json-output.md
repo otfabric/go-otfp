@@ -64,7 +64,7 @@ A complete example, from the OpENer EtherNet/IP reference adapter, is in
 order, every key always present:
 
 ```json
-{"name":"otprobe","version":"0.5.0","tag":"v0.5.0","commit":"1802d0f9afe8642d1e278120b76fcdfac967cb9e","built":"2026-11-07T15:41:49Z","go":"go1.26.3","platform":"linux/amd64"}
+{"name":"otprobe","version":"0.5.0","tag":"v0.5.0","commit":"1802d0f9afe8642d1e278120b76fcdfac967cb9e","built":"2026-11-07T15:41:49Z","libraries":[],"go":"go1.26.3","platform":"linux/amd64"}
 ```
 
 | Field | Meaning |
@@ -74,6 +74,7 @@ order, every key always present:
 | `tag` | the release tag (`v0.5.0`); `""` for a build that is not a release |
 | `commit` | full commit SHA, `-dirty` appended for a modified tree; `unknown` when not known |
 | `built` | RFC 3339 UTC build date; `unknown` when not known |
+| `libraries` | the OT Fabric `go-*` libraries the binary is built on, other than go-otfp itself: `[{"name":"go-x","version":"1.2.3"}]`, sorted by name; `[]` when none (today) |
 | `go` | Go version the binary was built with |
 | `platform` | `GOOS/GOARCH` |
 
