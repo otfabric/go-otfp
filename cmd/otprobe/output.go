@@ -3,6 +3,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -20,13 +21,34 @@ import (
 const schemaVersion = 1
 
 func writeScans(w io.Writer, scans []scan, f detectFlags) error {
+	sw := &stickyWriter{w: w}
+	var err error
 	switch f.format {
 	case "json":
-		return writeJSON(w, scans, f.trace)
+		err = writeJSON(sw, scans, f.trace)
 	case "table":
-		return writeTable(w, scans)
+		err = writeTable(sw, scans)
+	default:
+		err = writeText(sw, scans, f.trace)
 	}
-	return writeText(w, scans, f.trace)
+	return cmp.Or(err, sw.err)
+}
+
+// stickyWriter keeps the first write error, so that the many Fprintf calls
+// of the text output need not check each one: a result that could not be
+// written is an output error (exit 10), never a silent success.
+type stickyWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (s *stickyWriter) Write(p []byte) (int, error) {
+	if s.err != nil {
+		return 0, s.err
+	}
+	n, err := s.w.Write(p)
+	s.err = err
+	return n, err
 }
 
 // ---- text (default) ----

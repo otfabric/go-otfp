@@ -45,7 +45,8 @@ type listEntry struct {
 	Probe         string `json:"probe"`
 }
 
-func writeList(w io.Writer, format string) error {
+func writeList(out io.Writer, format string) error {
+	w := &stickyWriter{w: out}
 	var entries []listEntry
 	for _, fp := range otfp.DefaultRegistry().All() {
 		i := fp.Info()
@@ -75,7 +76,7 @@ func writeList(w io.Writer, format string) error {
 		fmt.Fprintf(w, "%-10s %-4s %-26s %s\n", e.Protocol, e.Network, ports(e.Ports), e.Name)
 		fmt.Fprintf(w, "           %s\n", e.Probe)
 	}
-	return nil
+	return w.err
 }
 
 func ports(p []int) string {

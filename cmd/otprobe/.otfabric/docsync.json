@@ -6,9 +6,5 @@
       "exit_codes": ".",
       "json_types": "."
     }
-  ],
-  "ignore": [
-    {"rule": "DS-EXIT", "subject": "exit 0", "reason": "the constant is exitDetected: 0 is success (a protocol was detected), as docs/exitcodes.md says; only the name differs from ok"},
-    {"rule": "DS-EXIT", "subject": "exit 1", "reason": "the constant is exitNoMatch: 1 is the scan's finding that nothing matched (the organisation table's scan outcome), as docs/exitcodes.md says; only the name differs from findings"}
   ]
 }

@@ -8,11 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os/signal"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	otfp "github.com/otfabric/go-otfp"
@@ -67,9 +65,10 @@ The target is a host with an optional port and scheme:
 A sweep tries, on each port, only the protocols registered for it; a
 single port tries every protocol of its transport, that port's first.
 
-Exit codes: 0 detected, 1 no match, 2 usage, 3 invalid input, 4 target
-unreachable, 5 timeout, 7 matched below high confidence, 10 interrupted or
-internal error. See docs/exitcodes.md.`,
+Exit codes: 0 detected, 1 no match (findings), 2 usage, 3 invalid input,
+4 transport (refused, unreachable, TLS), 5 timeout, 7 matched below high
+confidence (partial), 10 output or internal error, 130 interrupted. See
+docs/exitcodes.md.`,
 		Example: `  otprobe detect 10.0.0.5:502 --identify
   otprobe detect 10.0.0.5:102 --protocol s7comm --format json
   otprobe detect udp://10.0.0.5:47808 --identify --trace
@@ -77,7 +76,7 @@ internal error. See docs/exitcodes.md.`,
 		Args:              cobra.ExactArgs(1),
 		ValidArgsFunction: targetCompletion,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDetect(f, args[0], stdout, stderr)
+			return runDetect(cmd.Context(), f, args[0], stdout, stderr)
 		},
 	}
 	fl := cmd.Flags()
@@ -117,7 +116,7 @@ type scan struct {
 	report core.Report
 }
 
-func runDetect(f detectFlags, arg string, stdout, stderr io.Writer) error {
+func runDetect(parent context.Context, f detectFlags, arg string, stdout, stderr io.Writer) error {
 	if err := checkFormat(f.format, detectFormats...); err != nil {
 		return err
 	}
@@ -130,9 +129,7 @@ func runDetect(f detectFlags, arg string, stdout, stderr io.Writer) error {
 		return err
 	}
 
-	sigCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	ctx := sigCtx
+	ctx := parent
 	if f.overall > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, f.overall)
@@ -157,8 +154,8 @@ func runDetect(f detectFlags, arg string, stdout, stderr io.Writer) error {
 			break
 		}
 	}
-	if sigCtx.Err() != nil {
-		return fail(kindInternal, codeContextCanceled, "interrupted")
+	if parent.Err() != nil {
+		return fail(kindInterrupted, codeContextCanceled, "interrupted")
 	}
 	if len(scans) == 0 {
 		return fail(kindInvalidInput, codeNoFingerprinters, "no selected protocol has a well-known port to sweep; give a port")
@@ -166,7 +163,13 @@ func runDetect(f detectFlags, arg string, stdout, stderr io.Writer) error {
 	if err := writeScans(stdout, scans, f); err != nil {
 		return fail(kindOutput, codeOutputFailed, "write output: %v", err)
 	}
-	if code := outcome(scans); code != exitDetected {
+	code := outcome(scans)
+	if code == exitFindings && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		// --deadline cut the scan short: "nothing matched" is not a
+		// completed finding.
+		code = exitTimeout
+	}
+	if code != exitOK {
 		return &exitStatus{code}
 	}
 	return nil
@@ -347,41 +350,71 @@ func engineConfig(f detectFlags, sweep bool, stderr io.Writer) (core.EngineConfi
 	return cfg, nil
 }
 
-// outcome maps the scans to the exit code: detected, partial, no match, or,
-// when nothing answered at all, transport or timeout.
+// outcome maps the scans to the exit code: detected, partial, no match
+// (findings), or, when nothing answered at all, transport, timeout or
+// internal (a fingerprinter failed).
 func outcome(scans []scan) int {
-	var detected, partial, answered, refused, timedOut bool
+	var detected, partial, answered, transport, timedOut, internal bool
 	for _, s := range scans {
 		for _, r := range s.report.Results {
-			var ce *core.ConnectionError
-			var te *core.TimeoutError
 			switch {
 			case r.Matched && r.Confidence >= core.ConfidenceHigh:
 				detected = true
 			case r.Matched:
 				partial = true
-			case errors.As(r.Error, &ce):
-				refused = true
-			case errors.As(r.Error, &te):
-				timedOut = true
 			case r.Error == nil:
 				answered = true
+			default:
+				switch resultKind(r.Error) {
+				case kindTransport:
+					transport = true
+				case kindTimeout:
+					timedOut = true
+				case kindInternal:
+					internal = true
+				}
 			}
 		}
 	}
 	switch {
 	case detected:
-		return exitDetected
+		return exitOK
 	case partial:
 		return exitPartial
 	case answered:
-		return exitNoMatch
-	case refused:
+		return exitFindings
+	case transport:
 		return exitTransport
 	case timedOut:
 		return exitTimeout
+	case internal:
+		return exitInternal
 	}
-	return exitNoMatch
+	return exitFindings
+}
+
+// resultKind classifies the error of one probe result by the library's
+// typed errors: a dial or I/O failure (refused, unreachable, reset, TLS
+// handshake) is transport, a deadline is timeout, and a fingerprinter that
+// failed by itself (the engine reports a panic as a DetectError of op
+// "detect") is internal. Anything else is left to the other results.
+func resultKind(err error) kind {
+	if te, ok := errors.AsType[*core.TimeoutError](err); ok && te != nil {
+		return kindTimeout
+	}
+	if ce, ok := errors.AsType[*core.ConnectionError](err); ok && ce != nil {
+		return kindTransport
+	}
+	if de, ok := errors.AsType[*core.DetectError](err); ok && de != nil {
+		if de.Op == "detect" {
+			return kindInternal
+		}
+		return kindTransport
+	}
+	if core.IsTimeout(err) {
+		return kindTimeout
+	}
+	return ""
 }
 
 func hasScheme(s string) bool { return strings.Contains(s, "://") }
