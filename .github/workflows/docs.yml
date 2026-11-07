@@ -12,8 +12,21 @@ permissions:
 
 jobs:
   docs:
+    name: Library
     uses: otfabric/.github/.github/workflows/docs-check.yml@v3.5.0
     with:
       policy-version: v1.4.1
       docsync-version: v0.2.0
+    secrets: inherit
+
+  # The CLI is a nested module: docsync runs once per module. The policy
+  # check is about the repository and runs in the job above.
+  docs-otprobe:
+    name: otprobe
+    uses: otfabric/.github/.github/workflows/docs-check.yml@v3.5.0
+    with:
+      module-dir: cmd/otprobe
+      policy-version: v1.4.1
+      docsync-version: v0.2.0
+      run-policy: false
     secrets: inherit

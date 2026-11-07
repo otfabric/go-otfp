@@ -167,6 +167,7 @@ check: coverpkg-check fmt fmt-check lint lint-ci vet vuln test-race coverage cov
 # The documents against the code (DOC-008): docsync, as docs-check.yml runs it.
 docs-check: ## Check that the documents agree with the code (docsync)
 	@go run github.com/otfabric/docsync@$(DOCSYNC_VERSION) check .
+	@cd cmd/otprobe && go run github.com/otfabric/docsync@$(DOCSYNC_VERSION) check .
 
 test-interop: ## Run the interop suite against the pinned reference servers (needs Docker)
 	@echo "Running interop tests (go-<protocol> reference images)"
