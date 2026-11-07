@@ -60,9 +60,27 @@ A complete example, from the OpENer EtherNet/IP reference adapter, is in
 
 ## `otprobe version`
 
+`otprobe version --json` (or `--format json`) prints one line, keys in this
+order, every key always present:
+
 ```json
-{"version": "v0.1.0", "commit": "abc1234", "buildDate": "20261027-02:01:42", "go": "go1.23.12", "platform": "linux/amd64"}
+{"name":"otprobe","version":"0.5.0","tag":"v0.5.0","commit":"1802d0f9afe8642d1e278120b76fcdfac967cb9e","built":"2026-11-07T15:41:49Z","libraries":[],"go":"go1.26.3","platform":"linux/amd64"}
 ```
+
+| Field | Meaning |
+|---|---|
+| `name` | `otprobe` |
+| `version` | release version without the leading `v`; `dev` for a build without one |
+| `tag` | the release tag (`v0.5.0`); `""` for a build that is not a release |
+| `commit` | full commit SHA, `-dirty` appended for a modified tree; `unknown` when not known |
+| `built` | RFC 3339 UTC build date; `unknown` when not known |
+| `libraries` | the OT Fabric `go-*` libraries the binary is built on, other than go-otfp itself: `[{"name":"go-x","version":"1.2.3"}]`, sorted by name; `[]` when none (today) |
+| `go` | Go version the binary was built with |
+| `platform` | `GOOS/GOARCH` |
+
+This document has no `schemaVersion`; before v0.5.0 it was an indented
+object with `version` (with `v`), `commit` (short), `buildDate`, `go` and
+`platform`.
 
 ## Errors
 

@@ -439,20 +439,26 @@ $ otprobe detect 127.0.0.1:44818 --protocol enip --identify --format json
 ```
 
 `list` and `version` take `--format` as well; `OTPROBE_OUTPUT_FORMAT` sets
-the default of every command:
+the default of every command. `version` prints one line, and one line of JSON
+with `--json` or `--format json` (`--format table` prints the text line):
 
 ```console
-$ otprobe version --format json
-{
-  "buildDate": "20261027-02:01:33",
-  "commit": "de6de49",
-  "go": "go1.27.3",
-  "platform": "darwin/arm64",
-  "version": "v0.0.3-16-gde6de49-dirty"
-}
+$ otprobe version
+otprobe 0.5.0 (tag v0.5.0, commit 1802d0f9afe8642d1e278120b76fcdfac967cb9e, built 2026-11-07T15:41:49Z, go1.26.3, linux/amd64)
+$ otprobe version --json
+{"name":"otprobe","version":"0.5.0","tag":"v0.5.0","commit":"1802d0f9afe8642d1e278120b76fcdfac967cb9e","built":"2026-11-07T15:41:49Z","libraries":[],"go":"go1.26.3","platform":"linux/amd64"}
 $ echo $?
 0
 ```
+
+A build from source (`go build`, `go install`) without the release ldflags
+reports `dev` (a `go install …@vX.Y.Z` reports that version; a
+pseudo-version or a `+dirty` version is `dev` too), the
+commit from the Go build information with `-dirty` for a modified tree, and
+`built unknown`; the `tag …,` part appears only for a release build.
+Other OT Fabric `go-*` libraries the binary is built on (not go-otfp
+itself) appear after `built …` as `go-x 1.2.3, ` and in the JSON
+`libraries` array (`[]` when there are none, as today).
 
 ## Tracing
 
@@ -562,15 +568,10 @@ $ echo $?
 `otprobe completion <shell>` prints a completion script that completes
 commands, flags and flag values: protocol names for `--protocol` and
 `--exclude` (comma lists too), formats, networks, well-known ports for
-`--ports`, and target schemes.
+`--ports`, target schemes, and the shells of `completion`.
 
-```console
-$ source <(otprobe completion bash)                              # bash, this shell
-$ otprobe completion bash > /etc/bash_completion.d/otprobe       # bash, permanently
-$ otprobe completion zsh > "${fpath[1]}/_otprobe"                # zsh
-$ otprobe completion fish > ~/.config/fish/completions/otprobe.fish
-$ otprobe completion powershell | Out-String | Invoke-Expression
-```
+Installing the script for bash, zsh, fish and PowerShell is described in
+the [README](../../README.md#shell-completion).
 
 What the shell receives (cobra's completion protocol):
 
