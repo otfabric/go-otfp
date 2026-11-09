@@ -53,6 +53,8 @@ What go-otfp does not do, or does with restrictions.
   detection reads the server's plaintext flight without completing a
   handshake. Without a device certificate the data model cannot be read; a
   server that chooses CCM_8 is detected but GET /dcap is not read.
+- **Dialer**: `EngineConfig.Dialer` is a library option; `otprobe` has no
+  flag for it yet (no proxy or source address on the command line).
 - **Below `MatchThreshold`** (0.50) a result is a hint, not a match.
 
 ## Effect on the target

@@ -1,6 +1,6 @@
 # Support and feature matrix
 
-What go-otfp fingerprints, and against what each fingerprinter has been run. Status: v0.3.0. How each one works: [FINGERPRINTS.md](../FINGERPRINTS.md). Limits: [LIMITATIONS.md](../LIMITATIONS.md).
+What go-otfp fingerprints, and against what each fingerprinter has been run. Status: v0.6.0. How each one works: [FINGERPRINTS.md](../FINGERPRINTS.md). Limits: [LIMITATIONS.md](../LIMITATIONS.md).
 
 None of this is a conformance claim: nothing is certified, a match says how a peer answered and not what it is, and no fingerprinter has been recorded against physical devices.
 
@@ -8,7 +8,8 @@ None of this is a conformance claim: nothing is certified, a match says how a pe
 
 | go-otfp | Go | Supported |
 |---|---|---|
-| **v0.3.0** | 1.26 or later (CI: 1.26 and 1.27) | **yes** |
+| **v0.6.0** | 1.26 or later (CI: 1.26 and 1.27) | **yes** |
+| v0.3.0 to v0.5.1 | 1.26 or later | no |
 | v0.2.x | 1.23 or later (CI: 1.23 to 1.26) | no |
 
 ## 2. Platforms

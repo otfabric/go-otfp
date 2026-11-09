@@ -182,7 +182,9 @@ func main() {
 
 Detect a single protocol with `engine.Detect(ctx, target, core.ProtocolModbus)`,
 or build a custom registry from `core.NewRegistry()` and your own
-`core.Fingerprinter` implementations. The full API is in [API.md](API.md).
+`core.Fingerprinter` implementations. `EngineConfig.Dialer` opens every
+connection of a scan, TCP and UDP: enforce an address allowlist there, dial
+through a proxy or bind a source address ([SECURITY.md](SECURITY.md)). The full API is in [API.md](API.md).
 
 ### Examples
 

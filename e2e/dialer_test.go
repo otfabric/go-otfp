@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -108,7 +110,7 @@ func TestEngineDialerPassThroughFindsTheSpeaker(t *testing.T) {
 // by the server-side Stall cases (TestHostileServersBounded). Every
 // fingerprinter must keep its result contract (fuzzkit.Violation), never
 // claim certainty on another protocol's endpoint, and return within its
-// timeout. TestNoGoroutineLeaks covers the leak side of the same paths.
+// timeout. TestEngineClosesEveryDialedConnection covers the leak side.
 func TestClientSideFaultsThroughDialer(t *testing.T) {
 	var fps []core.Fingerprinter
 	for _, fp := range otfp.Fingerprinters() {
@@ -158,4 +160,122 @@ func TestClientSideFaultsThroughDialer(t *testing.T) {
 		}
 	}
 	wg.Wait()
+}
+
+// countingDialer dials for real and counts the connections it hands out
+// and those the library closes again.
+type countingDialer struct{ opened, closed atomic.Int64 }
+
+type countedConn struct {
+	net.Conn
+	d    *countingDialer
+	once sync.Once
+}
+
+func (c *countedConn) Close() error {
+	c.once.Do(func() { c.d.closed.Add(1) })
+	return c.Conn.Close()
+}
+
+func (d *countingDialer) dial(ctx context.Context, network, addr string) (net.Conn, error) {
+	var nd net.Dialer
+	c, err := nd.DialContext(ctx, network, addr)
+	if err != nil {
+		return nil, err
+	}
+	d.opened.Add(1)
+	return &countedConn{Conn: c, d: d}, nil
+}
+
+// Every connection the Dialer hands out is closed again by the library,
+// matched or not, on TCP and UDP, sequential and parallel, and on a
+// cancelled scan; nothing leaks goroutines or file descriptors.
+func TestEngineClosesEveryDialedConnection(t *testing.T) {
+	var targets []core.Target
+	for _, h := range speakers() {
+		targets = append(targets, testsrv.TCP(t, h))
+	}
+	for _, sp := range udpSpeakers() {
+		targets = append(targets, testsrv.UDP(t, sp.h))
+	}
+	settle()
+	goroutines, fds := runtime.NumGoroutine(), chaos.FDs()
+
+	var d countingDialer
+	for _, parallel := range []bool{false, true} {
+		cfg := core.DefaultEngineConfig()
+		cfg.Mode, cfg.EarlyStop, cfg.Parallel, cfg.Dialer = core.ModeIdentify, false, parallel, d.dial
+		engine := otfp.NewEngine(cfg)
+		for _, target := range targets {
+			target.Timeout = 300 * time.Millisecond
+			if _, err := engine.Scan(context.Background(), target); err != nil {
+				t.Fatalf("scan %s: %v", target.Addr(), err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			_, _ = engine.Scan(ctx, target)
+			cancel()
+		}
+	}
+	if d.opened.Load() == 0 {
+		t.Fatal("the dialer opened no connection")
+	}
+	if o, c := d.opened.Load(), d.closed.Load(); o != c {
+		t.Errorf("dialer opened %d connections, the library closed %d", o, c)
+	}
+	chaos.CheckLeaks(t, goroutines, fds)
+}
+
+// A Dialer that stalls until its context ends (a proxy that never answers)
+// bounds every fingerprinter by the target timeout: each returns a timeout
+// error and no match, and a cancelled scan returns at once.
+func TestStalledDialerIsBoundedByTheTimeout(t *testing.T) {
+	stall := func(ctx context.Context, _, _ string) (net.Conn, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	const timeout = 200 * time.Millisecond
+	target := core.Target{Host: "192.0.2.1", Port: 102, Timeout: timeout}
+	opts := core.Options{Mode: core.ModeIdentify, MaxIntrusiveness: core.ReadOnly, Dialer: stall}
+	var wg sync.WaitGroup
+	for _, fp := range otfp.Fingerprinters() {
+		p := fp.Info().Protocol
+		tg := target
+		tg.Network = fp.Info().Network // a fingerprinter skips another network
+		wg.Go(func() {
+			start := time.Now()
+			r, err := fp.Detect(context.Background(), tg, opts)
+			if d := time.Since(start); d > 5*timeout {
+				t.Errorf("%s: took %v with a %v timeout", p.Slug(), d, timeout)
+			}
+			if msg := fuzzkit.Violation(p, r, err); msg != "" {
+				t.Errorf("%s: %s", p.Slug(), msg)
+			}
+			if r.Matched {
+				t.Errorf("%s: matched through a stalled dialer: %+v", p.Slug(), r)
+			}
+			if e := cmpErr(r, err); !core.IsTimeout(e) {
+				t.Errorf("%s: error %v, want a timeout", p.Slug(), e)
+			}
+		})
+	}
+	wg.Wait()
+
+	engine := otfp.NewEngine(core.EngineConfig{Mode: core.ModeIdentify, MaxIntrusiveness: core.ReadOnly, Dialer: stall})
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(50*time.Millisecond, cancel)
+	target.Timeout = 10 * time.Second
+	start := time.Now()
+	_, _ = engine.Scan(ctx, target)
+	if d := time.Since(start); d > 2*time.Second {
+		t.Errorf("cancelled scan through a stalled dialer took %v", d)
+	}
+}
+
+// cmpErr is the error a fingerprinter reported: the returned one, else the
+// result's.
+func cmpErr(r core.Result, err error) error {
+	if err != nil {
+		return err
+	}
+	return r.Error
 }

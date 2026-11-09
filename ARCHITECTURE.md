@@ -61,7 +61,10 @@ that is simply the wrong protocol is a `NoMatch` with a nil error.
 
 ## Sessions (`internal/wire`)
 
-A `Session` wraps a dialled TCP, TLS or UDP connection and provides:
+A `Session` wraps a TCP, TLS or UDP connection opened by `Options.Dial`: the
+caller's `Dialer` (`EngineConfig.Dialer`), or a `net.Dialer` bounded by the
+target's timeout when there is none. No fingerprinter dials around it. A
+Session provides:
 
 - **Framed reads** — a `Framer` tells a read when a whole protocol frame has
   arrived, so detection does not rely on one `Read` returning a complete

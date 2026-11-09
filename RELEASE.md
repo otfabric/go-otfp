@@ -5,7 +5,7 @@
 
 ## v0.6.0
 
-**Date:** 2026-11-09
+**Date:** 2026-11-10
 **Previous release:** v0.5.1
 
 ### Added
