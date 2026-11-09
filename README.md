@@ -140,6 +140,8 @@ otprobe detect udp://10.0.0.5:47808         # BACnet / PROFINET / EtherNet/IP ov
 otprobe detect tls://10.0.0.5:802           # over TLS (Modbus Security, wss://, https://)
 otprobe detect 10.0.0.5 --safe              # sweep the well-known ports, OT-safe pacing
 otprobe detect 10.0.0.5:4840 -o table       # one row per probe; -o json for machines
+otprobe detect 10.0.0.5:502 --proxy socks5://127.0.0.1:1080   # through a SOCKS5 proxy (TCP)
+otprobe detect 10.0.0.5:502 --source-addr 10.0.0.250          # from this local address
 otprobe list                                # the protocols and their probes
 otprobe version --json                      # build information as one line of JSON
 ```

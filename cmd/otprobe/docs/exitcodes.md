@@ -13,8 +13,8 @@ parse.
 | 0 | Success (`ok`), detected: a protocol matched at high confidence (≥ 0.90) on at least one scanned port |
 | 1 | Findings, no match: the scan completed; the target answered, but no protocol matched |
 | 2 | Usage (`usage`): unknown command or flag, a missing or extra argument, a value a flag cannot hold, an unknown shell for `completion` |
-| 3 | Invalid input (`invalid_input`): a target, protocol name, format or flag combination that does not make sense. Nothing was sent |
-| 4 | Transport: nothing answered and the target refused, could not be reached, reset the connection, or failed the TLS handshake |
+| 3 | Invalid input (`invalid_input`): a target, protocol name, format, flag value (`--proxy`, `--source-addr`) or flag combination (`--proxy` with UDP) that does not make sense. Nothing was sent |
+| 4 | Transport: nothing answered and the target (or the `--proxy`) refused, could not be reached, reset the connection, or failed the TLS handshake |
 | 5 | Timeout: nothing answered in time, or `--deadline` ended the scan before anything matched |
 | 7 | Partial: a protocol matched, but below the high-confidence threshold (a valid result was written) |
 | 10 | Internal (`output`, `internal`): the result could not be written, or a fingerprinter failed unexpectedly |
