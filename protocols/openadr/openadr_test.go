@@ -4,6 +4,7 @@ package openadr
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/otfabric/go-otfp/core"
+	"github.com/otfabric/go-otfp/internal/testsrv"
 )
 
 func target(t *testing.T, h http.Handler) core.Target {
@@ -97,5 +99,31 @@ func TestNotOpenADR(t *testing.T) {
 	r, err := New().Detect(context.Background(), tg, core.Options{MaxIntrusiveness: core.ReadOnly})
 	if err != nil || r.Matched {
 		t.Fatalf("%v %v", r, err)
+	}
+}
+
+// When no connection opens, the result says why: a refused port and a
+// refusing Dialer are "could not decide", not "not OpenADR".
+func TestDialFailureIsTheResultError(t *testing.T) {
+	closed := testsrv.Closed(t)
+	closed.Timeout = 200 * time.Millisecond
+	r, err := New().Detect(context.Background(), closed, core.Options{MaxIntrusiveness: core.ReadOnly})
+	var ce *core.ConnectionError
+	if r.Matched || !errors.As(err, &ce) {
+		t.Fatalf("closed port: %v, %v; want no match and a *core.ConnectionError", r, err)
+	}
+
+	errBlocked := errors.New("blocked")
+	calls := 0
+	opts := core.Options{MaxIntrusiveness: core.ReadOnly, Dialer: func(context.Context, string, string) (net.Conn, error) {
+		calls++
+		return nil, errBlocked
+	}}
+	r, err = New().Detect(context.Background(), closed, opts)
+	if r.Matched || !errors.Is(err, errBlocked) {
+		t.Fatalf("refusing dialer: %v, %v; want the dialer's error", r, err)
+	}
+	if calls != 3 {
+		t.Errorf("dialer called %d times, want all three probes to try", calls)
 	}
 }

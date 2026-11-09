@@ -99,7 +99,10 @@ and the chainable `WithEvidence`, `WithIdentity`, `WithFingerprint`,
 ```go
 type Mode uint8            // ModeDetect, ModeIdentify
 type Intrusiveness uint8   // Passive, ReadOnly
-type Options struct { Mode Mode; Trace bool; Logger Logger; MaxIntrusiveness Intrusiveness }
+type Options struct { Mode Mode; Trace bool; Logger Logger; MaxIntrusiveness Intrusiveness; Dialer Dialer }
+
+type Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
+func (Options) Dial(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error)
 
 type Info struct {
 	Protocol      Protocol
@@ -122,6 +125,16 @@ endpoint was unreachable or timed out); a reply that is merely *not this
 protocol* is a `NoMatch` result with a nil error. Implementations must be
 safe for concurrent use and must never panic (the engine recovers panics
 anyway).
+
+`Options.Dial` opens every connection of a fingerprinter, TCP and UDP: with
+`Options.Dialer`, or, when it is nil, with a `net.Dialer` bounded by the
+timeout. A custom `Dialer` gets network `"tcp"` or `"udp"`, `host:port`, and
+a context carrying the timeout, which it should honour; the context is
+cancelled once `Dial` returns. Like `net.Dialer`, it returns a non-nil
+connection exactly when the error is nil: no connection and no error fails
+the dial, and a connection returned together with an error is closed. The
+built-in fingerprinters all dial through it; a fingerprinter of your own
+should too (`examples/custom`), so that the caller's `Dialer` covers it.
 
 ### Registry
 
@@ -150,6 +163,7 @@ type EngineConfig struct {
 	Parallel                bool
 	MaxConcurrency          int
 	MinInterval             time.Duration
+	Dialer                  Dialer        // nil: net.Dialer; passed to every fingerprinter's Options
 	Observer                Observer
 	Logger                  Logger
 }

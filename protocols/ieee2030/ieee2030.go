@@ -158,8 +158,7 @@ func dcapConfig(serverName string) *tls.Config {
 // readDcap completes a crypto/tls handshake without a client certificate
 // and reads /dcap; it returns the trace.
 func (f *Fingerprinter) readDcap(ctx context.Context, b *fpx.Builder, target core.Target, serverName string, certRequested bool, opts core.Options) []core.Exchange {
-	d := net.Dialer{Timeout: target.EffectiveTimeout()}
-	conn, err := d.DialContext(ctx, "tcp", target.Addr())
+	conn, err := opts.Dial(ctx, "tcp", target.Addr(), target.EffectiveTimeout())
 	if err != nil {
 		return nil
 	}

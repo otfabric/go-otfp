@@ -23,7 +23,9 @@ make check     # fmt, lint (staticcheck + golangci-lint), vet, govulncheck, race
 1. Create `protocols/<name>` with a `Fingerprinter` implementing
    `core.Info` and `core.Detect`, built on `internal/wire` and scored with
    `internal/fpx`. Follow an existing package (`protocols/modbus` is a good
-   template).
+   template). Open every connection with `wire.Dial` (or `opts.Dial`),
+   never `net.Dial`, so the caller's `Dialer` covers it;
+   `TestEngineDialerCoversEveryFingerprinter` fails otherwise.
 2. Register it in `otfp.Fingerprinters()` and add a `core.Protocol` constant
    (append — never renumber existing values).
 3. Validate the probe bytes against the protocol's reference implementation:

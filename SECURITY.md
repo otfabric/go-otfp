@@ -34,6 +34,10 @@ We will acknowledge your report within 48 hours and aim to provide a fix or miti
 - Detection is sequential by default (`core.DefaultEngineConfig`, `otprobe detect` without `--parallel`). Use `--safe` (`core.SafeEngineConfig`) for passive probes only, the likely protocols of the port first, and a 250 ms gap between probes; `--max-concurrency` and `--min-interval` tune this further.
 - `--all` runs every applicable probe instead of stopping at the first confident match; omit it (the default) to send the fewest probes.
 
+### Restricting what a scan reaches
+
+An application that lets users scan only approved networks should enforce the allowlist in `EngineConfig.Dialer` (or `Options.Dialer`), for example in a `net.Dialer.Control` hook, which sees the resolved IP right before connecting. Checking the host name before the scan leaves a DNS-rebinding gap. Every connection of the built-in fingerprinters, TCP and UDP, goes through the dialer; a refused dial is the result's `Error`, so the scan reports "could not decide" for that target. The same hook dials through a proxy or binds a source address. With `Parallel` the dialer is called from several goroutines at once.
+
 ### Results are hints, not proof
 
 The fingerprinted protocols carry no authentication, and the probes run over plain TCP. A result says how a peer answered, not what it is: any host can imitate the expected response. Do not base access decisions on a match.

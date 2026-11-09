@@ -82,12 +82,11 @@ type Session struct {
 func Dial(ctx context.Context, p core.Protocol, target core.Target, opts core.Options) (*Session, error) {
 	addr := target.Addr()
 	timeout := target.EffectiveTimeout()
-	d := net.Dialer{Timeout: timeout}
 	network := "tcp"
 	if target.Network == core.UDP {
 		network = "udp"
 	}
-	conn, err := d.DialContext(ctx, network, addr)
+	conn, err := opts.Dial(ctx, network, addr, timeout)
 	if err != nil {
 		return nil, core.ClassifyDial(p, addr, err)
 	}
