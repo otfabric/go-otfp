@@ -62,6 +62,12 @@ its own I/O, and the helpers `core.ClassifyDial(protocol, addr, err)` and
 `core.ClassifyIO(protocol, addr, op, err)` map a raw error to the right type.
 `core.IsTimeout(err)` reports whether an error is a deadline/timeout.
 
+A custom `Dialer`'s error goes through `core.ClassifyDial` like any dial
+failure: a timeout becomes `*TimeoutError`, anything else
+`*ConnectionError`, and both wrap it, so `errors.Is` / `errors.As` reach,
+for example, an allowlist's refusal. A `Dialer` that returns neither a
+connection nor an error fails with `dialer returned no connection`.
+
 ## In the CLI
 
 `otprobe` maps the outcome to an exit code — `0` detected, `1` no match,

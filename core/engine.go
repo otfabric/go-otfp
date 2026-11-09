@@ -69,6 +69,12 @@ type EngineConfig struct {
 	// fingerprinters, to stay below IDS rate thresholds.
 	MinInterval time.Duration
 
+	// Dialer opens every connection of the scan, TCP and UDP, for example
+	// to apply an address allowlist against the resolved IP, to dial
+	// through a proxy or to bind a source address. Nil uses net.Dialer
+	// with the target's timeout. With Parallel it is called concurrently.
+	Dialer Dialer
+
 	// Observer receives progress callbacks. Nil disables them.
 	Observer Observer
 
@@ -180,7 +186,7 @@ func (e *Engine) Detect(ctx context.Context, target Target, p Protocol) (Result,
 
 func (e *Engine) options() Options {
 	return Options{Mode: e.config.Mode, Trace: e.config.Trace, Logger: e.config.Logger,
-		MaxIntrusiveness: e.config.MaxIntrusiveness}
+		MaxIntrusiveness: e.config.MaxIntrusiveness, Dialer: e.config.Dialer}
 }
 
 func (e *Engine) plan(target Target) []Fingerprinter {

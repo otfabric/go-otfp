@@ -169,6 +169,14 @@ func (e *DetectError) Unwrap() error
 
 Unwrap returns the underlying error.
 
+### type Dialer
+
+```go
+type Dialer func(ctx context.Context, network, addr string) (net.Conn, error)
+```
+
+Dialer opens the connection of a fingerprinter to addr ("host:port") over network "tcp" or "udp", for example to apply an address allowlist, to dial through a proxy or to bind a source address. Like net.Dialer, it returns a non-nil connection exactly when the error is nil. With EngineConfig.Parallel it is called from several goroutines at once.
+
 ### type Engine
 
 ```go
@@ -260,6 +268,12 @@ type EngineConfig struct {
 	// MinInterval is the minimum delay between starting two
 	// fingerprinters, to stay below IDS rate thresholds.
 	MinInterval time.Duration
+
+	// Dialer opens every connection of the scan, TCP and UDP, for example
+	// to apply an address allowlist against the resolved IP, to dial
+	// through a proxy or to bind a source address. Nil uses net.Dialer
+	// with the target's timeout. With Parallel it is called concurrently.
+	Dialer Dialer
 
 	// Observer receives progress callbacks. Nil disables them.
 	Observer Observer
@@ -605,10 +619,21 @@ type Options struct {
 	// when Read Device Identification is not supported, but only when
 	// ReadOnly is allowed).
 	MaxIntrusiveness Intrusiveness
+	// Dialer opens the connections of the attempt; nil uses net.Dialer
+	// with the target's timeout. Fingerprinters dial through Options.Dial.
+	Dialer Dialer
 }
 ```
 
 Options configure one detection attempt.
+
+#### func (Options) Dial
+
+```go
+func (o Options) Dial(ctx context.Context, network, addr string, timeout time.Duration) (net.Conn, error)
+```
+
+Dial opens a connection for a fingerprinter: with o.Dialer, or, when it is nil, with a net.Dialer bounded by timeout. A custom Dialer is called with a context that already carries timeout (when positive) and should honour it; that context is cancelled once Dial returns, so the connection must not depend on it. A Dialer that returns no connection and no error fails; a connection returned together with an error is closed. Fingerprinters outside this module (see examples/custom) dial through it so that the caller's Dialer covers them too.
 
 #### func (Options) Log
 

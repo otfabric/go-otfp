@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net"
 	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -115,4 +116,26 @@ func TestRefused(t *testing.T) {
 		t.Fatal("want connection error")
 	}
 	_ = ce
+}
+
+// Both connections of a /dcap read, the probe and the crypto/tls re-dial, go
+// through the caller's Dialer.
+func TestDcapDialsThroughDialer(t *testing.T) {
+	cfg := &tls.Config{Certificates: []tls.Certificate{ecdsaCert(t)}, MinVersion: tls.VersionTLS12}
+	dcap := "HTTP/1.1 200 OK\r\nContent-Type: application/sep+xml\r\nContent-Length: 96\r\nConnection: close\r\n\r\n" +
+		`<DeviceCapability xmlns="urn:ieee:std:2030.5:ns" href="/dcap" pollRate="900"><TimeLink href="/tm"/></DeviceCapability>`
+	tg := tlsServer(t, cfg, dcap)
+	var calls atomic.Int32
+	opts := core.Options{Dialer: func(ctx context.Context, network, addr string) (net.Conn, error) {
+		calls.Add(1)
+		var d net.Dialer
+		return d.DialContext(ctx, network, addr)
+	}}
+	r, err := New().Detect(context.Background(), tg, opts)
+	if err != nil || !r.Matched || r.Confidence != core.ConfidenceCertain {
+		t.Fatalf("%v %v", r, err)
+	}
+	if n := calls.Load(); n < 2 {
+		t.Errorf("dialer called %d times, want the probe and the /dcap re-dial", n)
+	}
 }

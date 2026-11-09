@@ -42,6 +42,9 @@ type Options struct {
 	// when Read Device Identification is not supported, but only when
 	// ReadOnly is allowed).
 	MaxIntrusiveness Intrusiveness
+	// Dialer opens the connections of the attempt; nil uses net.Dialer
+	// with the target's timeout. Fingerprinters dial through Options.Dial.
+	Dialer Dialer
 }
 
 // Log returns the logger, never nil.

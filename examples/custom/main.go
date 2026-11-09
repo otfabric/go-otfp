@@ -41,8 +41,8 @@ func (telemetry) Info() core.Info {
 
 func (t telemetry) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
 	p := t.Info().Protocol
-	d := net.Dialer{Timeout: target.EffectiveTimeout()}
-	conn, err := d.DialContext(ctx, "tcp", target.Addr())
+	// Dialing through opts honours the caller's EngineConfig.Dialer.
+	conn, err := opts.Dial(ctx, "tcp", target.Addr(), target.EffectiveTimeout())
 	if err != nil {
 		return core.NoMatch(p), core.ClassifyDial(p, target.Addr(), err) // could not decide
 	}

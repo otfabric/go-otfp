@@ -64,9 +64,25 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	b := fpx.New(proto)
 	host := hostHeader(target)
 	var trace []core.Exchange
+	// dialErr is the first failed dial; it is the result's error when no
+	// connection opened at all, so a refused, timed-out or blocked target
+	// is "could not decide" rather than "not OpenADR".
+	var dialErr error
+	connected := false
+	dial := func() (*wire.Session, bool) {
+		s, err := wire.Dial(ctx, proto, target, opts)
+		if err != nil {
+			if dialErr == nil {
+				dialErr = err
+			}
+			return nil, false
+		}
+		connected = true
+		return s, true
+	}
 
 	// OpenADR 3: GET /auth/server.
-	if s, err := wire.Dial(ctx, proto, target, opts); err == nil {
+	if s, ok := dial(); ok {
 		resp, rerr := httpx.Request(s, "auth-server", "GET", host, "/auth/server", nil, 4096)
 		if rerr == nil && resp.Status == 200 && isJSON(resp.Header.Get("Content-Type")) {
 			var m map[string]json.RawMessage
@@ -91,7 +107,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	}
 
 	// OpenADR 3: GET /programs.
-	if s, err := wire.Dial(ctx, proto, target, opts); err == nil {
+	if s, ok := dial(); ok {
 		resp, rerr := httpx.Request(s, "programs", "GET", host, "/programs", nil, 8192)
 		if rerr == nil {
 			f.judgePrograms(b, resp)
@@ -105,7 +121,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 
 	// OpenADR 2.0b: POST oadrQueryRegistration.
 	if opts.MaxIntrusiveness >= core.ReadOnly {
-		if s, err := wire.Dial(ctx, proto, target, opts); err == nil {
+		if s, ok := dial(); ok {
 			resp, rerr := httpx.RequestBody(s, "oadr2b", "POST", host, oadr2bPath, map[string]string{
 				"Content-Type": "application/xml",
 			}, []byte(queryRegistration), 8192)
@@ -117,6 +133,9 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		}
 	}
 
+	if !connected && dialErr != nil {
+		return core.NoMatch(proto), dialErr
+	}
 	details := "not OpenADR"
 	if b.Confidence() >= core.MatchThreshold {
 		details = "OpenADR VTN"

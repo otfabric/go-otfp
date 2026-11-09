@@ -3,6 +3,18 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## Unreleased
+
+### Added
+
+- `core.Dialer`, `core.Options.Dialer`, `core.EngineConfig.Dialer` and `core.Options.Dial`: the caller supplies the function that opens every connection of a scan, TCP and UDP, to apply an address allowlist against the resolved IP, to dial through a proxy or to bind a source address. Nil keeps `net.Dialer` with the target's timeout. All built-in fingerprinters dial through it, including the IEEE 2030.5 `/dcap` re-dial; `examples/custom` shows a fingerprinter of your own doing the same. Policy rule API-R03.
+
+### Fixed
+
+- `openadr`: a target where none of the three probes could connect (refused, timed out, or refused by the dialer) is now a result with the dial error, "could not decide", instead of a `NoMatch` with a nil error ("not OpenADR").
+
+---
+
 ## v0.5.1
 
 **Date:** 2026-11-07
