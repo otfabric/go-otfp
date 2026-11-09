@@ -3,6 +3,19 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## v0.7.0
+
+**Date:** 2026-11-10
+**Previous release:** v0.6.1
+
+### Added
+
+- `otprobe detect --proxy socks5://host:port` (or `socks5h://` to resolve host names at the proxy) sends every TCP probe, TLS included, through a SOCKS5 proxy (RFC 1928, CONNECT, no authentication). `--proxy` with a UDP target is invalid input (exit 3); a proxy that refuses is a transport failure (exit 4) with its reason in the result.
+- `otprobe detect --source-addr <ip>` binds every probe, TCP and UDP, to a local address.
+- Both build on `EngineConfig.Dialer` (v0.6.0). Library code is the same as v0.6.1.
+
+---
+
 ## v0.6.1
 
 **Date:** 2026-11-10

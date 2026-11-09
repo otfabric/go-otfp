@@ -14,6 +14,7 @@ import (
 	"time"
 
 	otfp "github.com/otfabric/go-otfp"
+	"github.com/otfabric/go-otfp/cmd/otprobe/internal/netdial"
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/tlsx"
 	"github.com/otfabric/go-otfp/protocols/canopen"
@@ -42,6 +43,9 @@ type detectFlags struct {
 	canopenNode int
 	trace       bool
 	debug       bool
+	// sourceAddr and proxy build the dialer of every probe (netdial).
+	sourceAddr string
+	proxy      string
 }
 
 var detectFormats = []string{"text", "json", "table"}
@@ -99,12 +103,14 @@ docs/exitcodes.md.`,
 	fl.IntVar(&f.canopenNode, "canopen-node", 0, "CANopen node (1-127) to identify through a CiA 309-3 gateway (default: the gateway's default node)")
 	fl.BoolVar(&f.trace, "trace", false, "include the raw probe and response bytes")
 	fl.BoolVar(&f.debug, "debug", false, "log every probe to stderr")
+	fl.StringVar(&f.sourceAddr, "source-addr", "", "bind every probe to this local IP address (an interface's address)")
+	fl.StringVar(&f.proxy, "proxy", "", "probe through a SOCKS5 proxy: socks5://host:port, or socks5h:// to resolve host names at the proxy (TCP only)")
 
 	_ = cmd.RegisterFlagCompletionFunc("protocol", protocolCompletion)
 	_ = cmd.RegisterFlagCompletionFunc("exclude", protocolCompletion)
 	_ = cmd.RegisterFlagCompletionFunc("network", fixedCompletion("tcp\tTCP (with --tls: TLS)", "udp\tUDP datagrams"))
 	_ = cmd.RegisterFlagCompletionFunc("ports", portCompletion)
-	for _, name := range []string{"port", "timeout", "deadline", "max-concurrency", "min-interval", "path", "canopen-node"} {
+	for _, name := range []string{"port", "timeout", "deadline", "max-concurrency", "min-interval", "path", "canopen-node", "source-addr", "proxy"} {
 		_ = cmd.RegisterFlagCompletionFunc(name, cobra.NoFileCompletions)
 	}
 	return cmd
@@ -203,6 +209,9 @@ func parseTargets(arg string, f detectFlags) ([]core.Target, bool, error) {
 	}
 	if t.TLS != nil && t.Network == core.UDP {
 		return nil, false, fail(kindInvalidInput, codeInvalidFlags, "TLS is not available over UDP")
+	}
+	if f.proxy != "" && t.Network == core.UDP {
+		return nil, false, fail(kindInvalidInput, codeInvalidFlags, "--proxy carries TCP only; UDP probes cannot go through it")
 	}
 	if f.port != 0 && len(f.ports) > 0 {
 		return nil, false, fail(kindInvalidInput, codeInvalidFlags, "--port and --ports are exclusive")
@@ -343,6 +352,11 @@ func engineConfig(f detectFlags, sweep bool, stderr io.Writer) (core.EngineConfi
 		}
 		cfg.Exclude = append(cfg.Exclude, p)
 	}
+	dial, err := netdial.New(f.sourceAddr, f.proxy)
+	if err != nil {
+		return cfg, fail(kindInvalidInput, codeInvalidInput, "%v", err)
+	}
+	cfg.Dialer = dial
 	if f.debug {
 		cfg.Logger = core.NewSlogLogger(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
 		cfg.Observer = debugObserver{stderr}

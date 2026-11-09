@@ -346,6 +346,33 @@ Port 9000 answered but matched nothing: it is the OCPP CSMS, which refuses
 the random charger identity of a sweep; probe it with `--path` as shown
 above.
 
+## Through a proxy or from a source address
+
+`--proxy` sends every probe through a SOCKS5 proxy (RFC 1928, CONNECT, no
+authentication), for example an SSH dynamic forward into a plant network.
+`socks5://` resolves a host name locally and sends the IP; `socks5h://`
+sends the name for the proxy to resolve. SOCKS5 CONNECT carries TCP only, so
+`--proxy` with a UDP target (`udp://`, `--network udp`) is invalid input
+(exit 3). TLS (`tls://`, `--tls`) runs end to end over the proxied
+connection. A proxy that refuses the CONNECT is a transport failure (exit 4)
+and its reason is in the result, for example `socks5: connection not allowed
+by ruleset`.
+
+`--source-addr` binds every probe, TCP and UDP, to one local IP address: the
+address of the interface that faces the device. Without a proxy it picks the
+interface; with one it is the address the proxy is dialled from.
+
+```bash
+ssh -D 1080 -N jump.plant.example &          # a SOCKS5 proxy into the plant network
+otprobe detect 10.20.0.5:502 --identify --proxy socks5://127.0.0.1:1080
+otprobe detect plc-07.plant.lan --safe --proxy socks5h://127.0.0.1:1080
+otprobe detect 10.20.0.5:102 --source-addr 10.20.0.250
+```
+
+An invalid value (a scheme other than `socks5`/`socks5h`, proxy
+credentials, a path, a missing port, or a `--source-addr` that is not an IP
+address) is invalid input (exit 3) and nothing is sent.
+
 ## Output formats
 
 Text is the default, for people. `--format table` (`-o table`) prints one row
@@ -629,3 +656,5 @@ Run `otprobe detect --help` for the full list:
 | `-o, --format` | `text` (default), `table`, `json` |
 | `--trace` | raw probe and response bytes |
 | `--debug` | log each probe to stderr |
+| `--proxy` | probe through a SOCKS5 proxy, `socks5://host:port` or `socks5h://host:port` (TCP only) |
+| `--source-addr` | bind every probe to this local IP address |
