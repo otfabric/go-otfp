@@ -72,6 +72,6 @@ connection nor an error fails with `dialer returned no connection`.
 
 `otprobe` maps the outcome to an exit code — `0` detected, `1` no match,
 `2` usage, `3` invalid input, `4` unreachable, `5` timeout, `7` partial,
-`10` interrupted or internal — and renders fatal errors as one `error:` line,
+`10` internal, `130` interrupted — and renders fatal errors as one `error:` line,
 or one JSON `error` object with `--format json`. See
 [cmd/otprobe/docs/exitcodes.md](cmd/otprobe/docs/exitcodes.md).

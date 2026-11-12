@@ -223,6 +223,6 @@ a bare host to sweep its well-known ports), `otprobe list`, `otprobe version`
 and `otprobe completion bash|zsh|fish|powershell`. Text is the default output;
 `-o table` and `-o json` are available on every command. Exit codes: 0
 detected, 1 no match, 2 usage, 3 invalid input, 4 unreachable, 5 timeout, 7
-partial, 10 interrupted or internal. See [cmd/otprobe/docs/cli.md](cmd/otprobe/docs/cli.md),
+partial, 10 internal, 130 interrupted. See [cmd/otprobe/docs/cli.md](cmd/otprobe/docs/cli.md),
 [cmd/otprobe/docs/exitcodes.md](cmd/otprobe/docs/exitcodes.md) and
 [cmd/otprobe/docs/json-output.md](cmd/otprobe/docs/json-output.md).
