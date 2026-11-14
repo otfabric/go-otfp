@@ -3,6 +3,24 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## v0.7.1
+
+**Date:** 2026-11-14
+**Previous release:** v0.7.0
+
+The go-otfp library is unchanged from v0.7.0.
+
+### Security
+
+- `otprobe` is built with Go 1.26.11 (v0.7.0 was built with 1.26.10). Go 1.26.11 fixes GO-2026-6859 in `net/http`. govulncheck reports it as reachable from `otprobe` on 1.26.10, and not on 1.26.11.
+
+### Changed
+
+- `otprobe` is built on go-otfp v0.7.0 (was v0.6.0).
+- CI: otfabric/engineering policy 1.6, the shared workflows v3.8.0, and one pull request workflow with a single required check. Releases now run the API compatibility gate before tagging.
+
+---
+
 ## v0.7.0
 
 **Date:** 2026-11-10
