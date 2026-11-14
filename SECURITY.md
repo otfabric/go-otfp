@@ -46,4 +46,4 @@ The fingerprinted protocols carry no authentication, and the probes run over pla
 ### Input handling
 
 - Each response is read with a deadline (`Target.Timeout`, 3 s by default) into a bounded buffer, and every parser checks lengths before use.
-- The parsers are fuzzed: each protocol package has a `Fuzz` target, as do the shared TPKT/COTP and Modbus MBAP codecs. `make fuzz` runs them, and CI fuzzes briefly on every push.
+- The parsers are fuzzed: each protocol package has a `Fuzz` target, as do the shared TPKT/COTP and Modbus MBAP codecs. `make fuzz` runs them, and CI fuzzes briefly on every pull request.
