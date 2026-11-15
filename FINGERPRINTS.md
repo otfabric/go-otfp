@@ -201,7 +201,7 @@ reported: no common address, no ASDU types. This holds at every
 intrusiveness level, so also under `SafeEngineConfig` and `otprobe --safe`.
 
 **Starting data transfer is an option**, `iec104.Fingerprinter.StartDT`
-(`otprobe detect --identify --iec104-startdt`). With it, identify mode sends
+(`otprobe detect --identify --iec104-startdt --yes`). With it, identify mode sends
 STARTDT act, reads the APDUs the station sends within a window (one second
 by default, at most 256 APDUs), answers a TESTFR act of the station, sends
 one S-format APDU that acknowledges the I-format APDUs received, and sends
@@ -221,8 +221,9 @@ The option changes the station, which is why it is one:
 It needs a scan that allows read-only probes and is refused otherwise: with
 `StartDT` set and `MaxIntrusiveness` below `ReadOnly`, `Detect` returns a
 `*core.DetectError` of operation `startdt` and opens no connection, in
-detect mode too. `otprobe` refuses `--iec104-startdt` together with `--safe`
-(exit 3).
+detect mode too. `otprobe` asks for the confirmation `--yes` with
+`--iec104-startdt` (exit 2 without it) and refuses `--iec104-startdt`
+together with `--safe` (exit 3).
 
 ### OCPP (`ocpp`, TCP/WebSocket, passive)
 

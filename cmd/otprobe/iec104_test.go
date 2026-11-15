@@ -106,11 +106,11 @@ func TestIEC104DefaultSendsNoStartDT(t *testing.T) {
 	}
 }
 
-// With --identify --iec104-startdt the tool starts data transfer, reads the
+// With --identify --iec104-startdt --yes the tool starts data transfer, reads the
 // common address, acknowledges and stops.
 func TestIEC104StartDTFlag(t *testing.T) {
 	st := newIEC104Station(t)
-	code, out, errw := exec("detect", addr(st.target), "--protocol", "iec104", "--identify", "--iec104-startdt")
+	code, out, errw := exec("detect", addr(st.target), "--protocol", "iec104", "--identify", "--iec104-startdt", "--yes")
 	if code != exitOK || !strings.Contains(out, "testfr=con;startdt=con") || !strings.Contains(out, "commonAddress  4711") {
 		t.Fatalf("exit %d\nstdout: %s\nstderr: %s", code, out, errw)
 	}
@@ -126,13 +126,15 @@ func TestIEC104StartDTFlag(t *testing.T) {
 }
 
 // --iec104-startdt is refused with --safe, and without --identify, before
-// anything is sent.
+// anything is sent, with or without --yes.
 func TestIEC104StartDTFlagIsRefused(t *testing.T) {
 	st := newIEC104Station(t)
 	for _, args := range [][]string{
 		{"--identify", "--iec104-startdt", "--safe"},
+		{"--identify", "--iec104-startdt", "--safe", "--yes"},
 		{"--iec104-startdt", "--safe"},
 		{"--iec104-startdt"},
+		{"--iec104-startdt", "--yes"},
 	} {
 		code, out, errw := exec(append([]string{"detect", addr(st.target), "--protocol", "iec104"}, args...)...)
 		if code != exitInvalidInput || !strings.Contains(errw, "--iec104-startdt") || out != "" {
@@ -143,6 +145,30 @@ func TestIEC104StartDTFlagIsRefused(t *testing.T) {
 	defer st.mu.Unlock()
 	if len(st.conns) != 0 {
 		t.Errorf("the station accepted %d connections, want 0", len(st.conns))
+	}
+}
+
+// --identify --iec104-startdt without --yes is a usage error (exit 2, code
+// confirmation_required) and nothing is sent; --yes alone changes nothing.
+func TestIEC104StartDTNeedsYes(t *testing.T) {
+	st := newIEC104Station(t)
+	code, out, errw := exec("detect", addr(st.target), "--protocol", "iec104", "--identify", "--iec104-startdt")
+	if code != exitUsage || !strings.Contains(errw, "--yes") || out != "" {
+		t.Errorf("exit %d, want %d and an error that names --yes\nstdout: %s\nstderr: %s", code, exitUsage, out, errw)
+	}
+	code, out, _ = exec("detect", addr(st.target), "--protocol", "iec104", "--identify", "--iec104-startdt", "--format", "json")
+	if code != exitUsage || !strings.Contains(out, `"code": "confirmation_required"`) || !strings.Contains(out, `"kind": "usage"`) {
+		t.Errorf("JSON: exit %d, want %d and code confirmation_required\n%s", code, exitUsage, out)
+	}
+	st.mu.Lock()
+	n := len(st.conns)
+	st.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("the station accepted %d connections, want 0", n)
+	}
+	code, out, errw = exec("detect", addr(st.target), "--protocol", "iec104", "--identify", "--yes")
+	if code != exitOK || strings.Contains(out, "startdt=con") {
+		t.Errorf("--yes without --iec104-startdt: exit %d, want %d and no STARTDT\nstdout: %s\nstderr: %s", code, exitOK, out, errw)
 	}
 }
 

@@ -3,12 +3,30 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## v0.10.0
+
+**Date:** 2026-11-15
+**Previous release:** v0.9.1
+
+The library is unchanged. `otprobe` asks for a confirmation before it changes a station's state.
+
+### Breaking
+
+- **`otprobe`: `--iec104-startdt` needs `--yes`.** Starting data transfer at an IEC 104 station takes data transfer and the acknowledged events from a connected control centre, so `otprobe detect --identify --iec104-startdt` now also needs the confirmation `--yes`, as the organisation's CLI standard asks for a state-changing step. Without it the command exits 2 (`usage`, JSON code `confirmation_required`) and sends nothing. A script that used `--iec104-startdt` adds `--yes`.
+
+### Changed
+
+- `otprobe`: new flag `--yes`, which confirms a step that changes a station's state (today only `--iec104-startdt`); alone it changes nothing.
+- docs/cli.md, docs/exitcodes.md and FINGERPRINTS.md describe the confirmation.
+
+---
+
 ## v0.9.1
 
 **Date:** 2026-11-15
 **Previous release:** v0.9.0
 
-`otprobe` is built on go-otfp v0.9.0, so the library changes of v0.9.0 (Breaking, Changed and Fixed above) now reach `otprobe`. The library is unchanged.
+`otprobe` is built on go-otfp v0.9.0, so the library changes of v0.9.0 (Breaking, Changed and Fixed below) now reach `otprobe`. The library is unchanged.
 
 ### Changed
 

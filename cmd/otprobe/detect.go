@@ -45,8 +45,10 @@ type detectFlags struct {
 	// iec104StartDT lets --identify start data transfer at an IEC 104
 	// station (STARTDT, acknowledgement, STOPDT).
 	iec104StartDT bool
-	trace         bool
-	debug         bool
+	// yes confirms a step that changes a station's state (--iec104-startdt).
+	yes   bool
+	trace bool
+	debug bool
 	// sourceAddr and proxy build the dialer of every probe (netdial).
 	sourceAddr string
 	proxy      string
@@ -105,7 +107,8 @@ docs/exitcodes.md.`,
 	formatFlag(cmd, &f.format, detectFormats...)
 	fl.StringVar(&f.path, "path", "", "WebSocket path OCPP tries first, starting with / (e.g. /ocpp/<station id>)")
 	fl.IntVar(&f.canopenNode, "canopen-node", 0, "CANopen node (1-127) to identify through a CiA 309-3 gateway (default: the gateway's default node)")
-	fl.BoolVar(&f.iec104StartDT, "iec104-startdt", false, "with --identify: start data transfer at an IEC 104 station (STARTDT), acknowledge what it sends and stop again, to read its common address; takes data transfer and the acknowledged events from a connected control centre (not with --safe)")
+	fl.BoolVar(&f.iec104StartDT, "iec104-startdt", false, "with --identify: start data transfer at an IEC 104 station (STARTDT), acknowledge what it sends and stop again, to read its common address; takes data transfer and the acknowledged events from a connected control centre; needs --yes (not with --safe)")
+	fl.BoolVar(&f.yes, "yes", false, "confirm a step that changes a station's state (--iec104-startdt)")
 	fl.BoolVar(&f.trace, "trace", false, "include the raw probe and response bytes")
 	fl.BoolVar(&f.debug, "debug", false, "log every probe to stderr")
 	fl.StringVar(&f.sourceAddr, "source-addr", "", "bind every probe to this local IP address (an interface's address)")
@@ -376,6 +379,9 @@ func engineConfig(f detectFlags, sweep bool, stderr io.Writer) (core.EngineConfi
 	}
 	if f.iec104StartDT && !f.identify {
 		return core.EngineConfig{}, fail(kindInvalidInput, codeInvalidFlags, "--iec104-startdt needs --identify")
+	}
+	if f.iec104StartDT && !f.yes {
+		return core.EngineConfig{}, fail(kindUsage, codeConfirmationRequired, "--iec104-startdt starts data transfer at the station and acknowledges its events: confirm with --yes")
 	}
 	cfg := core.DefaultEngineConfig()
 	if f.safe {

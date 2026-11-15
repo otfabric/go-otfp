@@ -216,13 +216,15 @@ It changes the station. Data transfer goes to the probe's connection, so a
 control centre connected to the station stops receiving (with one
 redundancy group its connection is stopped or closed), and the events the
 probe acknowledges are not sent to the control centre again. Use it on a
-station no control centre is connected to. It needs `--identify`, and
-`--safe` refuses it (exit 3, nothing is sent). The reference server sends
+station no control centre is connected to. It needs `--identify` and the
+confirmation `--yes`: without `--yes` it is refused as a usage error (exit 2,
+code `confirmation_required`, nothing is sent). `--safe` refuses it, with or
+without `--yes` (exit 3, nothing is sent). The reference server sends
 no spontaneous APDU, so there is no common address in its output (captured
 before v0.8.0, when `--identify` alone ran this exchange):
 
 ```console
-$ otprobe detect 127.0.0.1:2404 --identify --iec104-startdt
+$ otprobe detect 127.0.0.1:2404 --identify --iec104-startdt --yes
 Target:   tcp://127.0.0.1:2404
 Detected: IEC 60870-5-104, confidence 1.00
 
@@ -237,7 +239,11 @@ $ echo $?
 ```
 
 ```console
-$ otprobe detect 127.0.0.1:2404 --identify --iec104-startdt --safe
+$ otprobe detect 127.0.0.1:2404 --identify --iec104-startdt
+error: --iec104-startdt starts data transfer at the station and acknowledges its events: confirm with --yes
+$ echo $?
+2
+$ otprobe detect 127.0.0.1:2404 --identify --iec104-startdt --yes --safe
 error: --iec104-startdt starts data transfer at the station and acknowledges its events: it is not sent with --safe
 $ echo $?
 3
@@ -700,7 +706,8 @@ Run `otprobe detect --help` for the full list:
 | `--all` | run every probe, no early stop |
 | `--path` | WebSocket path OCPP tries first, starting with `/` (e.g. `/ocpp/<station id>`) |
 | `--canopen-node` | CANopen node (1-127) identified through a CiA 309-3 gateway (default: the gateway's default node) |
-| `--iec104-startdt` | with `--identify`: start data transfer at an IEC 104 station (STARTDT), acknowledge what it sends and stop again, to read its common address; takes data transfer and the acknowledged events from a connected control centre; not with `--safe` |
+| `--iec104-startdt` | with `--identify`: start data transfer at an IEC 104 station (STARTDT), acknowledge what it sends and stop again, to read its common address; takes data transfer and the acknowledged events from a connected control centre; needs `--yes`; not with `--safe` |
+| `--yes` | confirm a step that changes a station's state (`--iec104-startdt`) |
 | `-o, --format` | `text` (default), `table`, `json` |
 | `--trace` | raw probe and response bytes |
 | `--debug` | log each probe to stderr |
