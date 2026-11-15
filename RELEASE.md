@@ -3,6 +3,19 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## v0.9.1
+
+**Date:** 2026-11-15
+**Previous release:** v0.9.0
+
+`otprobe` is built on go-otfp v0.9.0, so the library changes of v0.9.0 (Breaking, Changed and Fixed above) now reach `otprobe`. The library is unchanged.
+
+### Changed
+
+- `otprobe`: requires go-otfp v0.9.0 (was v0.8.0).
+
+---
+
 ## v0.9.0
 
 **Date:** 2026-11-15
