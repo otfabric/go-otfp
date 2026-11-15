@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -65,10 +66,12 @@ func TestStationSpeaksFirst(t *testing.T) {
 	}
 }
 
-func TestIdentify(t *testing.T) {
+// Identify mode with the StartDT option: data transfer is started and the
+// station's own frames are decoded.
+func TestIdentifyWithStartDT(t *testing.T) {
 	target := testsrv.TCP(t, station(4711, false))
-	f := &Fingerprinter{Window: 300 * time.Millisecond}
-	r, err := f.Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify, Trace: true})
+	f := &Fingerprinter{Window: 300 * time.Millisecond, StartDT: true}
+	r, err := f.Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify, MaxIntrusiveness: core.ReadOnly, Trace: true})
 	if err != nil || !r.Matched {
 		t.Fatalf("%v %v", r, err)
 	}
@@ -77,6 +80,22 @@ func TestIdentify(t *testing.T) {
 	}
 	if r.Fingerprint.Signature != "testfr=con;startdt=con" {
 		t.Fatalf("signature %q", r.Fingerprint.Signature)
+	}
+}
+
+// Identify mode by default: the result of detection, and a line saying that
+// data transfer was not started.
+func TestIdentifyByDefault(t *testing.T) {
+	target := testsrv.TCP(t, station(4711, false))
+	r, err := New().Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify, MaxIntrusiveness: core.ReadOnly, Trace: true})
+	if err != nil || !r.Matched || r.Confidence != core.ConfidenceCertain {
+		t.Fatalf("%v %v", r, err)
+	}
+	if r.Identity != nil || r.Fingerprint.Signature != "testfr=con" || len(r.Exchanges) != 1 {
+		t.Fatalf("identity %+v, signature %q, %d exchanges; want no identity, testfr=con and one exchange", r.Identity, r.Fingerprint.Signature, len(r.Exchanges))
+	}
+	if len(r.Evidence) != 2 || !strings.HasPrefix(r.Evidence[1], "data transfer not started") {
+		t.Fatalf("evidence %q", r.Evidence)
 	}
 }
 

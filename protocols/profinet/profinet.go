@@ -324,8 +324,10 @@ func decodeIM0(b []byte) (im0, bool) {
 	p = p[16:]
 	m.hardware = binary.BigEndian.Uint16(p)
 	p = p[2:]
+	// SWRevisionPrefix is one visible character ('V', 'R', 'P', 'U' or
+	// 'T'); an octet outside printable ASCII is shown as 'V'.
 	prefix := p[0]
-	if prefix < 0x20 {
+	if prefix < 0x20 || prefix > 0x7E {
 		prefix = 'V'
 	}
 	m.software = fmt.Sprintf("%c%d.%d.%d", prefix, p[1], p[2], p[3])

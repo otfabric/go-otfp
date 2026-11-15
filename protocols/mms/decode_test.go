@@ -63,8 +63,8 @@ func TestBER(t *testing.T) {
 	if _, ok := findDepth([]byte{0x30, 0x00}, []byte{0x30}, 99); ok {
 		t.Fatal("depth bound")
 	}
-	if uintOf([]byte{1, 0}) != 256 {
-		t.Fatal("uintOf")
+	if n, ok := integer([]byte{1, 0}, 16); !ok || n != 256 {
+		t.Fatal("integer")
 	}
 }
 

@@ -32,7 +32,7 @@ model, version and serial the device returns.
 | **BACnet/IP** | UDP | 47808 | confirmed ReadProperty of the device object | vendor, model, firmware, object name |
 | **PROFINET IO** | UDP | 34964 | DCE/RPC ReadImplicit of I&M0 | vendor ID, order ID, serial, revisions |
 | **DNP3** | TCP | 20000 | data-link REQUEST_LINK_STATUS | device attributes (g0): vendor, product, version |
-| **IEC 60870-5-104** | TCP | 2404 | APCI TESTFR act/con | common address, ASDU types |
+| **IEC 60870-5-104** | TCP | 2404 | APCI TESTFR act/con | none by default; common address and ASDU types with the STARTDT option |
 | **OCPP** | TCP (ws) | 80/443 | WebSocket upgrade (ocpp2.1/2.0.1/1.6) | negotiated version |
 | **IEEE 2030.5** | TCP (TLS) | 443 | mutual-TLS / ECDSA / CCM_8 shape, GET /dcap | server certificate, poll rate |
 | **OpenADR** (3 / 2.0b) | TCP | 8080/443 | GET /auth/server, /programs; oadrQueryRegistration | OAuth2 token URL |
@@ -54,7 +54,11 @@ confidence model and the standards behind each detector.
 - **Read-only identity** — identify mode uses each protocol's own standard
   identification service (Read Device Identification, the CIP Identity
   object, SZL, MMS Identify, the BACnet Device object, OPC UA GetEndpoints,
-  PROFINET I&M0, …).
+  PROFINET I&M0, …). IEC 60870-5-104 has none: identify mode sends it
+  nothing beyond TESTFR, and starting data transfer (STARTDT), which takes
+  events from a connected control centre, is an explicit option
+  (`iec104.Fingerprinter.StartDT`, `otprobe --iec104-startdt`) that the safe
+  configuration refuses.
 - **Deterministic, graded confidence** — a shared [confidence
   scale](FINGERPRINTS.md#confidence); a match is backed by evidence a caller
   can inspect.

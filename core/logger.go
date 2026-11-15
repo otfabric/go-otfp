@@ -9,7 +9,11 @@ import (
 )
 
 // Logger receives debug and diagnostic output. Logging is silent by
-// default. Methods are called synchronously and must not block.
+// default. Methods are called synchronously and must not block; with
+// EngineConfig.Parallel they are called from several goroutines at once. A
+// method that does not return normally is recovered where the engine and
+// the fingerprinters call it, and becomes the error of that probe's result
+// (a *DetectError).
 type Logger interface {
 	Debugf(format string, args ...any)
 	Infof(format string, args ...any)

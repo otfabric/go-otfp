@@ -41,18 +41,26 @@ protocol. `Network`: `String()`, text marshalling, `ParseNetwork`.
 
 ```go
 type Target struct {
-	Host    string       // IP or host name
+	Host    string       // IP or host name; no space, control character or "/"
 	Port    int          // 1..65535
 	Network Network       // zero value TCP
 	Timeout time.Duration // per-operation; zero → DefaultTimeout (3s)
 	TLS     *tls.Config  // non-nil runs TCP probes over TLS
-	Path    string       // overrides the first HTTP/WebSocket path
+	Path    string       // overrides the first HTTP/WebSocket path; starts with "/", no space or control character
 }
 ```
 
 `Addr()`, `String()` (`tcp://host:port`, `+tls`), `EffectiveTimeout()`,
 `Validate()`. `ParseTarget("[scheme://]host:port")` accepts the schemes
 `tcp`, `udp` and `tls`.
+
+`Validate` (and so `ParseTarget`, `Engine.Scan` and `Engine.Detect`) refuses
+an empty `Host` or one that holds a space, a control character or `/`, a
+`Port` outside 1..65535, a negative `Timeout`, an unknown `Network`, TLS on
+UDP, and a `Path` that does not start with `/` or holds a space or a control
+character. `Host` and `Path` are sent in a Host header and a request line by
+the web fingerprinters; `Path` is sent as it is, percent-encoded where
+needed, and may carry a query.
 
 ### Confidence, Identity, Fingerprint, Result
 
@@ -93,6 +101,12 @@ type Result struct {
 `String()`, `ErrorString()`. Constructors `NoMatch`, `Match`, `ErrorResult`
 and the chainable `WithEvidence`, `WithIdentity`, `WithFingerprint`,
 `WithExchanges` are used by fingerprinter implementations.
+
+The strings of a result from a built-in fingerprinter are text: graphic
+characters only, at most 4096 runes each ([SECURITY.md](SECURITY.md)).
+`Exchanges` is bounded: per connection of a fingerprinter at most 256
+exchanges and 4 MiB of probes and responses, followed by one entry without
+octets whose label counts what was left out.
 
 ### Fingerprinter
 
@@ -148,6 +162,10 @@ func (*Registry) Protocols() []Protocol
 func (*Registry) Plan(Target) []Fingerprinter   // port-ordered
 ```
 
+The zero `Registry` is empty and ready to use. `Register` returns an error
+for a nil fingerprinter; a nil `*Registry` holds nothing and refuses
+`Register`.
+
 ### Engine
 
 ```go
@@ -189,6 +207,29 @@ func (Report) Matches() []Result
 `Scan` returns an error only for an invalid target or when no fingerprinter
 applies (`ErrNoFingerprinters`); per-protocol failures are in `Results`.
 
+An engine keeps no state between scans and has nothing to close. The zero
+`Engine`, a nil `*Engine` and an engine over a nil registry have no
+fingerprinters: `Scan` returns `ErrNoFingerprinters` and `Detect` a
+`*ProtocolNotFoundError`.
+
+### Ownership
+
+What crosses the API belongs to one side, and the library keeps to it:
+
+| Value | Mode |
+|---|---|
+| `EngineConfig.Protocols`, `Exclude` given to `NewEngine` | owned by the engine: copied; the caller keeps its slices |
+| The result of `Engine.Config()` | owned by the caller: a copy, slices included |
+| `Config` slices given to a `NewWithConfig` (`sunspec.Config.Bases`, `s7.Config.CalledTSAPs`, `dnp3.Config.Outstations`, `mms.Config.CallingTSEL` and `CalledTSEL`) | owned by the fingerprinter: copied |
+| `sunspec.DefaultBases`, `sparkplugb.Filters` | read when a fingerprinter is constructed (`New`, `NewWithConfig`) and copied then; change them, if at all, before constructing fingerprinters and not while one is constructed. A `sparkplugb.Fingerprinter` that was not made by `New` copies `Filters` at the start of each `Detect` |
+| `iec104.Framer`, `dnp3.Framer` | variables for compatibility, not to be assigned; the fingerprinters do not read them |
+| `Report`, `Result`, `Identity`, `Fingerprint`, `Exchange` returned by a scan | owned by the caller |
+| `Registry.All()`, `Plan()`, `Protocols()` | owned by the caller: new slices; the fingerprinters in them are shared |
+| `Registry`, `Dialer`, `Observer`, `Logger`, a `Fingerprinter` given to the engine | shared: used by the engine for as long as it is used, from several goroutines with `Parallel`; they must be safe for that |
+| `Target.TLS` | shared and not modified: a fingerprinter works on a clone |
+| The input of `iec104.Parse`, `mqtt.ParsePacket`, `mqtt.ParsePublish`, `mqtt.ParseSuback` | borrowed: `APDU.ASDU`, `Packet.Body`, `Publish.Payload` and the SUBACK codes are parts of the input, valid for as long as the caller leaves the input unchanged; `Publish.Topic` is a copy |
+| `dnp3.ParseHeader` | `Header.Data` is owned by the caller: a copy |
+
 ### Observer, Logger, errors
 
 ```go
@@ -203,10 +244,19 @@ func NopLogger() Logger
 func NewSlogLogger(slog.Handler) Logger
 ```
 
+An `Observer` callback runs on the goroutine of its probe with no lock of
+the engine held: it may call the engine, and it may cancel the scan's
+context. A slow callback delays its own probe only. A callback, or a
+`Logger` method, that does not return normally is recovered by the engine,
+in sequential and in parallel scans, and becomes the error of that probe's
+result (a `*DetectError` of operation `observer` or `logger`); the scan goes
+on. When `OnStart` does not return normally the fingerprinter is not run.
+
 Typed errors: `DetectError`, `TimeoutError`, `ConnectionError`
 (`Refused()`), `InvalidResponseError`, `ProtocolNotFoundError`, and the
 sentinel `ErrNoFingerprinters`. `ClassifyDial` and `ClassifyIO` map transport
-failures to them; `IsTimeout(err)` reports deadline errors. See
+failures to them; `IsTimeout(err)` reports deadline errors, and every
+`*TimeoutError` matches `context.DeadlineExceeded` with `errors.Is`. See
 [ERRORS.md](ERRORS.md).
 
 ## Protocol packages
@@ -215,6 +265,18 @@ Each `protocols/<name>` package exports `New() *Fingerprinter` (and, for
 EtherNet/IP, `NewUDP()`); several expose a `Config` and `NewWithConfig` for
 tuning addresses, TSAPs, unit IDs or paths. See the package docs on
 pkg.go.dev and [FINGERPRINTS.md](FINGERPRINTS.md).
+
+`iec104.Fingerprinter` has two fields: `Window`, and `StartDT`, which makes
+identify mode start data transfer at the station (STARTDT, one
+acknowledgement, STOPDT). `StartDT` is off by default, needs
+`MaxIntrusiveness` `ReadOnly`, and makes `Detect` return a `*DetectError` of
+operation `startdt` without connecting when the scan allows passive probes
+only. `iec104.MaxAPDUs` (256) bounds the APDUs read in its window.
+
+`mqtt.Client` is a session for one goroutine. `Close` may be called more
+than once: the first call returns the connection's close error, a later one
+returns nil. After `Close` its operations fail with a `*DetectError` that
+matches `net.ErrClosed`.
 
 ## CLI — `otprobe`
 

@@ -40,7 +40,9 @@ const subprotocols = "ocpp2.1, ocpp2.0.1, ocpp1.6"
 type Config struct {
 	// Path is the WebSocket path. The default is /ocpp/<random id>, which
 	// go-ocpp and most CSMSs require (the station identity is the last
-	// segment).
+	// segment). It is sent as it is in the request line: it starts with
+	// "/" and holds no space and no control character, or Detect returns
+	// an error without connecting.
 	Path string
 }
 
@@ -67,15 +69,12 @@ func (f *Fingerprinter) Info() core.Info {
 	}
 }
 
-// Detect probes target.
+// Detect probes target. The path (Config.Path, else Target.Path) and the
+// target's host must be what one HTTP request line and Host header can
+// carry (httpx.CheckRequest): otherwise Detect returns a *core.DetectError
+// of operation "request" and does not connect.
 func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
 	b := fpx.New(proto)
-	s, err := wire.Dial(ctx, proto, target, opts)
-	if err != nil {
-		return core.NoMatch(proto), err
-	}
-	defer s.Close() //nolint:errcheck
-
 	path := f.path
 	if path == "" {
 		path = target.Path
@@ -84,6 +83,15 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		path = "/ocpp/" + stationID()
 	}
 	host := hostHeader(target)
+	if err := httpx.CheckRequest("GET", host, path, nil); err != nil {
+		return core.NoMatch(proto), &core.DetectError{Protocol: proto, Op: "request", Err: err}
+	}
+	s, err := wire.Dial(ctx, proto, target, opts)
+	if err != nil {
+		return core.NoMatch(proto), err
+	}
+	defer s.Close() //nolint:errcheck
+
 	var key [16]byte
 	_, _ = rand.Read(key[:])
 	resp, err := httpx.Request(s, "ws-upgrade", "GET", host, path, map[string]string{

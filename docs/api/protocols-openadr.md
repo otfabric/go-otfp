@@ -40,7 +40,7 @@ New returns an OpenADR fingerprinter.
 func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error)
 ```
 
-Detect probes target.
+Detect probes target. A target whose host cannot be sent in a Host header (httpx.CheckRequest) is not connected to: Detect returns a \*core.DetectError of operation "request".
 
 #### func (Fingerprinter) Info
 

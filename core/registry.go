@@ -10,7 +10,8 @@ import (
 )
 
 // Registry holds fingerprinters, at most one per protocol and network. It is
-// safe for concurrent use.
+// safe for concurrent use. The zero value is an empty registry, ready to
+// use; a nil *Registry holds nothing and refuses Register.
 type Registry struct {
 	mu  sync.RWMutex
 	fps []Fingerprinter
@@ -19,9 +20,16 @@ type Registry struct {
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry { return &Registry{} }
 
-// Register adds fp. It fails when a fingerprinter for the same protocol and
-// network is already registered, or when Info reports an invalid protocol.
+// Register adds fp. It fails when fp is nil, when a fingerprinter for the
+// same protocol and network is already registered, or when Info reports an
+// invalid protocol.
 func (r *Registry) Register(fp Fingerprinter) error {
+	if r == nil {
+		return fmt.Errorf("register: nil registry")
+	}
+	if fp == nil {
+		return fmt.Errorf("register: nil fingerprinter")
+	}
 	info := fp.Info()
 	if !info.Protocol.IsValid() {
 		return fmt.Errorf("register: invalid protocol %d", info.Protocol)
@@ -50,6 +58,9 @@ func (r *Registry) MustRegister(fps ...Fingerprinter) *Registry {
 
 // Get returns the fingerprinter for protocol p over network n, or nil.
 func (r *Registry) Get(p Protocol, n Network) Fingerprinter {
+	if r == nil {
+		return nil
+	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, fp := range r.fps {
@@ -60,8 +71,12 @@ func (r *Registry) Get(p Protocol, n Network) Fingerprinter {
 	return nil
 }
 
-// All returns every fingerprinter, ordered by Priority then protocol.
+// All returns every fingerprinter, ordered by Priority then protocol. The
+// slice is the caller's.
 func (r *Registry) All() []Fingerprinter {
+	if r == nil {
+		return nil
+	}
 	r.mu.RLock()
 	out := append([]Fingerprinter(nil), r.fps...)
 	r.mu.RUnlock()

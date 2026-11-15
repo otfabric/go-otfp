@@ -16,5 +16,6 @@ func FuzzDetect(f *testing.F) {
 	f.Add([]byte{})
 	f.Fuzz(func(t *testing.T, data []byte) {
 		fuzzkit.Detect(t, New(), data)
+		fuzzkit.Detect(t, &Fingerprinter{StartDT: true}, data)
 	})
 }

@@ -9,7 +9,6 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	otfp "github.com/otfabric/go-otfp"
 	"github.com/spf13/cobra"
 )
 
@@ -48,7 +47,8 @@ type listEntry struct {
 func writeList(out io.Writer, format string) error {
 	w := &stickyWriter{w: out}
 	var entries []listEntry
-	for _, fp := range otfp.DefaultRegistry().All() {
+	// The registry of a detect without flags: what the tool probes with.
+	for _, fp := range registry(detectFlags{}).All() {
 		i := fp.Info()
 		e := listEntry{
 			Protocol: i.Protocol.Slug(), Name: i.Protocol.String(), Network: i.Network.String(),

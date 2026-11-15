@@ -62,8 +62,21 @@ What go-otfp does not do, or does with restrictions.
 
 Probing is active network traffic: probes may raise alerts in OT intrusion
 detection systems, and some open protocol state before the connection is
-closed (S7 Setup Communication, STARTDT in IEC 104 identify mode, the OCPP
-WebSocket upgrade, the MQTT CONNECT and, for Sparkplug B and MQTT identify,
-QoS 0 subscriptions in a clean session the broker discards on DISCONNECT;
-CANopen identify sends SDO uploads on the bus). See [SECURITY.md](SECURITY.md) for `--safe` and the
-pacing options.
+closed (S7 Setup Communication, the MMS association, the OPC UA secure
+channel and the EtherNet/IP session of identify mode, the OCPP WebSocket
+upgrade, the MQTT CONNECT and, for Sparkplug B and MQTT identify, QoS 0
+subscriptions in a clean session the broker discards on DISCONNECT;
+CANopen identify sends SDO uploads on the bus). See
+[SECURITY.md](SECURITY.md) for the list, `--safe` and the pacing options.
+
+**IEC 60870-5-104.** By default the probe sends TESTFR only, and identify
+mode reports no identity: the common address and the ASDU types are read
+only with the option that starts data transfer
+(`iec104.Fingerprinter.StartDT`, `otprobe --iec104-startdt`). That option
+takes data transfer, and the events it acknowledges, from a control centre
+connected to the station ([FINGERPRINTS.md](FINGERPRINTS.md)).
+
+**The `otprobe` of v0.8.0 is built on go-otfp v0.7.1.** The tool applies
+the IEC 104 default and the escaping of its output itself; the other
+library changes of v0.8.0 reach the tool with the release that builds it
+on v0.8.0 ([RELEASE.md](RELEASE.md)).

@@ -109,9 +109,12 @@ func validFlags(h byte) bool {
 // Framer returns a wire.Framer that reads one MQTT control packet of at
 // most limit bytes (header included). A reserved packet type, flags MQTT
 // forbids for the type, a five-byte remaining length or a packet larger
-// than limit stop the read.
+// than limit stop the read; no bytes yet asks for more.
 func Framer(limit int) wire.Framer {
 	return func(b []byte) int {
+		if len(b) == 0 {
+			return 0
+		}
 		if !validFlags(b[0]) {
 			return -1
 		}
@@ -140,7 +143,9 @@ type Packet struct {
 	Body []byte
 }
 
-// ParsePacket validates that b is exactly one control packet.
+// ParsePacket validates that b is exactly one control packet. The Packet's
+// Body is borrowed: it is the part of b after the fixed header, not a copy,
+// and changes with b.
 func ParsePacket(b []byte) (Packet, error) {
 	if len(b) < 2 {
 		return Packet{}, fmt.Errorf("packet of %d bytes is shorter than a fixed header", len(b))
@@ -364,6 +369,8 @@ type Publish struct {
 }
 
 // ParsePublish validates p as a PUBLISH of a session of the given level.
+// The Publish's Payload is borrowed from p.Body, and so from the octets
+// ParsePacket was given; Topic is a copy.
 func ParsePublish(level byte, p Packet) (Publish, error) {
 	if p.Type != TypePublish {
 		return Publish{}, fmt.Errorf("%s, not PUBLISH", TypeName(p.Type))
@@ -405,7 +412,7 @@ func ParsePublish(level byte, p Packet) (Publish, error) {
 
 // ParseSuback validates p as the SUBACK of packet identifier id with one
 // code per filter, and returns the codes (0x00..0x02 granted QoS, 0x80 and
-// above refusals).
+// above refusals). The codes are borrowed from p.Body.
 func ParseSuback(level byte, p Packet, id uint16, filters int) ([]byte, error) {
 	if p.Type != TypeSuback {
 		return nil, fmt.Errorf("%s, not SUBACK", TypeName(p.Type))

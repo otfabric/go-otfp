@@ -191,8 +191,38 @@ $ echo $?
 
 ### IEC 60870-5-104
 
+IEC 104 has no identity service. `--identify` sends a station TESTFR and
+nothing else, as detection does, and says so (this one example is from a
+loopback station of the test suite, not from the reference server):
+
 ```console
 $ otprobe detect 127.0.0.1:2404 --identify
+Target:   tcp://127.0.0.1:2404
+Detected: IEC 60870-5-104, confidence 1.00
+
+  IEC 60870-5-104  1.00  IEC 60870-5-104 controlled station
+    - TESTFR con answers TESTFR act
+    - data transfer not started: the common address and the ASDU types are read only with STARTDT, which is opt-in
+    fingerprint  iec104.apci:testfr=con
+
+  1 probe in 1ms
+$ echo $?
+0
+```
+
+`--iec104-startdt` adds the exchange that reads the common address: STARTDT,
+the APDUs the station sends within a second, one acknowledgement, STOPDT.
+It changes the station. Data transfer goes to the probe's connection, so a
+control centre connected to the station stops receiving (with one
+redundancy group its connection is stopped or closed), and the events the
+probe acknowledges are not sent to the control centre again. Use it on a
+station no control centre is connected to. It needs `--identify`, and
+`--safe` refuses it (exit 3, nothing is sent). The reference server sends
+no spontaneous APDU, so there is no common address in its output (captured
+before v0.8.0, when `--identify` alone ran this exchange):
+
+```console
+$ otprobe detect 127.0.0.1:2404 --identify --iec104-startdt
 Target:   tcp://127.0.0.1:2404
 Detected: IEC 60870-5-104, confidence 1.00
 
@@ -204,6 +234,13 @@ Detected: IEC 60870-5-104, confidence 1.00
   1 probe in 1.019s
 $ echo $?
 0
+```
+
+```console
+$ otprobe detect 127.0.0.1:2404 --identify --iec104-startdt --safe
+error: --iec104-startdt starts data transfer at the station and acknowledges its events: it is not sent with --safe
+$ echo $?
+3
 ```
 
 ### OCPP — WebSocket subprotocol
@@ -249,7 +286,8 @@ $ echo $?
 Without a port, `otprobe` sweeps the well-known ports of the selected
 protocols (`--ports` gives an explicit list) and tries, on each port, only
 the protocols registered for it. Closed ports are summarised at the end.
-`--safe` keeps to passive probes and paces them 250 ms apart:
+`--safe` keeps to passive probes and paces them 250 ms apart; it refuses
+`--iec104-startdt`:
 
 ```console
 $ otprobe detect 127.0.0.1 --safe
@@ -513,6 +551,13 @@ $ echo $?
 
 `--debug` logs each probe and its outcome to stderr as it runs.
 
+The text and table formats are for a terminal: every value that comes from
+a result (a name, a version, an evidence line, an error) is written as
+text. A character that is not graphic (a control or format character, a
+line or paragraph separator) and an octet that is not UTF-8 appear as
+escapes (`\x1b`, `\n`, `\u202e`), so a value stays on its line. `--format
+json` is for a parser and escapes what JSON requires.
+
 ## Errors and exit codes
 
 The exit code says what happened; it is stable for scripts. Full table:
@@ -647,12 +692,13 @@ Run `otprobe detect --help` for the full list:
 | `--deadline` | deadline for the whole scan |
 | `--protocol`, `--exclude` | select or skip protocols (`otprobe list`) |
 | `-i, --identify` | read the device identity |
-| `--safe` | passive probes, likely protocols only, 250 ms pacing |
+| `--safe` | passive probes, likely protocols only, 250 ms pacing; refuses `--iec104-startdt` |
 | `--parallel`, `--max-concurrency` | concurrent probes (off by default) |
 | `--min-interval` | delay between probes |
 | `--all` | run every probe, no early stop |
 | `--path` | WebSocket path OCPP tries first (station id) |
 | `--canopen-node` | CANopen node (1-127) identified through a CiA 309-3 gateway (default: the gateway's default node) |
+| `--iec104-startdt` | with `--identify`: start data transfer at an IEC 104 station (STARTDT), acknowledge what it sends and stop again, to read its common address; takes data transfer and the acknowledged events from a connected control centre; not with `--safe` |
 | `-o, --format` | `text` (default), `table`, `json` |
 | `--trace` | raw probe and response bytes |
 | `--debug` | log each probe to stderr |

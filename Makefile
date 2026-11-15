@@ -135,7 +135,7 @@ stress: ## Run every test STRESS times (default 10) with -race in shuffled order
 FUZZTIME ?= 20s
 fuzz: ## Fuzz every parser for FUZZTIME each (default 20s)
 	@echo "Fuzzing (FUZZTIME=$(FUZZTIME))"
-	@for pkg in $$(go list ./... | grep -E '/protocols/|/internal/(iso|mbap)'); do \
+	@for pkg in $$(go list ./... | grep -E '/protocols/|/internal/(iso|mbap|httpx)'); do \
 		for fn in $$(go test -list '^Fuzz' $$pkg 2>/dev/null | grep '^Fuzz'); do \
 			echo "  $$pkg $$fn"; \
 			go test -run='^$$' -fuzz="^$$fn$$" -fuzztime=$(FUZZTIME) -parallel=4 $$pkg || exit 1; \

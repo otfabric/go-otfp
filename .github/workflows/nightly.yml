@@ -2,9 +2,9 @@ name: Nightly
 run-name: "Nightly on ${{ github.ref_name }}"
 
 # The extended tier: every parser fuzzed for five minutes, the shuffled
-# race stress runs, and the interop suite against the pinned reference
-# servers. OTFP_REQUIRE_INTEROP=1 turns a missing prerequisite into a
-# failure.
+# race stress runs, the tests on a 32-bit architecture, and the interop
+# suite against the pinned reference servers. OTFP_REQUIRE_INTEROP=1 turns
+# a missing prerequisite into a failure.
 
 on:
   schedule:
@@ -48,6 +48,23 @@ jobs:
         with:
           go-version-file: go.mod
       - run: make stress
+
+  # Platform width (otfabric/engineering standards/testing.md#platform-width):
+  # the parsers convert wire lengths and counts to int, and the module is
+  # built for a 32-bit platform (linux/arm), so the tests also run where int
+  # has 32 bits. ubuntu runners execute 386 binaries; the race detector does
+  # not exist for 386.
+  test-386:
+    name: Tests on a 32-bit architecture
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Tests on a 32-bit architecture
+        run: GOARCH=386 go test -count=1 ./...
 
   interop:
     name: Interop

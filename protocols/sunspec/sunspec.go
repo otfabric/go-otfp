@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -42,7 +43,10 @@ const (
 	maxModels   = 32
 )
 
-// DefaultBases are the base addresses tried, in order.
+// DefaultBases are the base addresses tried, in order. NewWithConfig
+// copies them when Config.Bases is empty: change the variable, if at all,
+// before fingerprinters are constructed and not while one is; a
+// fingerprinter keeps the addresses it was constructed with.
 var DefaultBases = []uint16{40000, 0, 50000, 39999, 40001, 1, 49999, 50001}
 
 // Config configures the fingerprinter.
@@ -50,6 +54,7 @@ type Config struct {
 	// UnitID is the Modbus unit probed; zero means 1.
 	UnitID byte
 	// Bases are the base addresses tried; nil means DefaultBases.
+	// NewWithConfig copies the slice: the caller keeps its own.
 	Bases []uint16
 }
 
@@ -64,12 +69,12 @@ func New() *Fingerprinter { return NewWithConfig(Config{}) }
 
 // NewWithConfig returns a fingerprinter with the given configuration.
 func NewWithConfig(c Config) *Fingerprinter {
-	f := &Fingerprinter{unit: c.UnitID, bases: c.Bases}
+	f := &Fingerprinter{unit: c.UnitID, bases: slices.Clone(c.Bases)}
 	if f.unit == 0 {
 		f.unit = 1
 	}
 	if len(f.bases) == 0 {
-		f.bases = DefaultBases
+		f.bases = slices.Clone(DefaultBases)
 	}
 	return f
 }

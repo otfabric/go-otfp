@@ -47,6 +47,12 @@ const (
 	idServiceFault         = 397
 
 	maxFrame = 1 << 20
+
+	// maxEndpoints is the most endpoint descriptions decoded from one
+	// GetEndpoints response, maxPolicies the most distinct security
+	// policies kept from them.
+	maxEndpoints = 64
+	maxPolicies  = 16
 )
 
 // Fingerprinter detects OPC UA binary.
@@ -158,7 +164,7 @@ func (f *Fingerprinter) identify(b *fpx.Builder, s *wire.Session, endpoint strin
 		if e.productURI != "" {
 			id.Set("productUri", fpx.Clean(e.productURI))
 		}
-		if p := shortPolicy(e.policyURI); p != "" && !seen[p] {
+		if p := fpx.Clean(shortPolicy(e.policyURI)); p != "" && !seen[p] && len(policies) < maxPolicies {
 			seen[p] = true
 			policies = append(policies, p)
 		}
@@ -230,7 +236,7 @@ func parseError(body []byte) (uint32, string) {
 	}
 	code := binary.LittleEndian.Uint32(body)
 	reason, _, _ := getString(body[4:])
-	return code, reason
+	return code, fpx.Clean(reason)
 }
 
 // ---- encoders ----
@@ -452,7 +458,7 @@ func parseEndpoints(resp []byte) ([]endpoint, error) {
 	}
 	n := int32LE(p)
 	p = p[4:]
-	if n < 0 || n > 64 {
+	if n < 0 || n > maxEndpoints {
 		return nil, fmt.Errorf("endpoint count %d", n)
 	}
 	var out []endpoint

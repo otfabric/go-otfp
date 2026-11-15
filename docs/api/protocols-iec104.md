@@ -10,29 +10,33 @@ Package iec104 fingerprints IEC 60870-5-104.
 
 Detection sends TESTFR act, a U-format APCI that a controlled station answers with TESTFR con in any state without starting data transfer. The reply must be the confirmation (0x83), not an echo of the activation, so echo services do not match.
 
-In identify mode data transfer is started (STARTDT act/con), the frames the station sends on its own within a short window are decoded for the ASDU common address and type identifiers (an end of initialisation, M\_EI\_NA\_1, is common), acknowledged, and data transfer is stopped again (STOPDT). No interrogation or command is sent: IEC 104 has no identity object, and a general interrogation makes the station send its whole process image.
+Identify mode sends nothing more by default: IEC 104 has no identity object, and everything beyond TESTFR changes the station's state. The result is that of detection, with a line of evidence saying that data transfer was not started.
+
+With Fingerprinter.StartDT, an explicit choice of the caller, identify mode starts data transfer (STARTDT act/con), decodes the frames the station sends on its own within a short window for the ASDU common address and type identifiers (an end of initialisation, M\_EI\_NA\_1, is common), acknowledges them, and stops data transfer again (STOPDT). A station gives data transfer to the connection that started it, and takes what was acknowledged off its event queue: on a station with a control centre connected, the control centre stops receiving and does not get the events the probe acknowledged. StartDT is refused under a scan that allows passive probes only. No interrogation or command is sent in either case: a general interrogation makes the station send its whole process image.
+
+## Constants
+
+```go
+const (
+
+	// MaxAPDUs bounds the APDUs read in the listening window of identify
+	// mode with StartDT, however many the station sends in it.
+	MaxAPDUs = 256
+	// maxListed bounds the common addresses and the type identifiers
+	// listed in the identity.
+
+)
+```
+
+APCI constants.
 
 ## Variables
 
 ```go
-var Framer wire.Framer = func(b []byte) int {
-	if len(b) == 0 {
-		return 0
-	}
-	if b[0] != startByte {
-		return -1
-	}
-	if len(b) < 2 {
-		return 0
-	}
-	if b[1] < 4 || b[1] > 253 {
-		return -1
-	}
-	return int(b[1]) + 2
-}
+var Framer wire.Framer = frame
 ```
 
-Framer reads one APDU.
+Framer reads one APDU. It is a variable for compatibility and is not to be assigned: the fingerprinter frames its reads with the function the variable is initialised with, whatever the variable holds.
 
 ## Functions
 
@@ -68,15 +72,32 @@ APDU is a parsed APCI with its ASDU, if any.
 func Parse(b []byte) (APDU, error)
 ```
 
-Parse validates one APDU.
+Parse validates one APDU. The APDU's ASDU is borrowed: it is the part of b after the control field, not a copy, and changes with b.
 
 ### type Fingerprinter
 
 ```go
 type Fingerprinter struct {
 	// Window is how long identify mode listens for spontaneous frames
-	// after STARTDT. Zero means one second (capped by the target timeout).
+	// after STARTDT, when StartDT is set. Zero means one second (capped by
+	// the target timeout).
 	Window time.Duration
+
+	// StartDT makes identify mode start data transfer on its connection:
+	// STARTDT act, the APDUs of Window read for the common address and the
+	// type identifiers, one S-format acknowledgement of the I-format APDUs
+	// received, and STOPDT act. It is off by default, because it changes
+	// the station: a station gives data transfer to the connection that
+	// started it (with one redundancy group it stops, or closes, the
+	// connection of a control centre), and an acknowledged event leaves
+	// the station's queue and is not sent to the control centre again.
+	//
+	// StartDT needs a scan that allows read-only probes. With StartDT set
+	// and Options.MaxIntrusiveness below core.ReadOnly (the zero Options,
+	// core.SafeEngineConfig), Detect does not connect and returns a
+	// *core.DetectError of operation "startdt", in detect mode too: the
+	// two settings contradict each other, and neither is dropped silently.
+	StartDT bool
 }
 ```
 
@@ -96,7 +117,7 @@ New returns an IEC 104 fingerprinter.
 func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error)
 ```
 
-Detect probes target.
+Detect probes target. See StartDT for the one configuration it refuses.
 
 #### func (Fingerprinter) Info
 

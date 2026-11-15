@@ -15,18 +15,10 @@ In identify mode the device attributes (group 0, variation 254, all attributes) 
 ## Variables
 
 ```go
-var Framer wire.Framer = func(b []byte) int {
-	if len(b) >= 1 && b[0] != start0 || len(b) >= 2 && b[1] != start1 {
-		return -1
-	}
-	if len(b) < 3 {
-		return 0
-	}
-	return FrameLen(b[2])
-}
+var Framer wire.Framer = frame
 ```
 
-Framer reads one data-link frame.
+Framer reads one data-link frame. It is a variable for compatibility and is not to be assigned: the fingerprinter frames its reads with the function the variable is initialised with, whatever the variable holds.
 
 ## Functions
 
@@ -69,7 +61,8 @@ ParseAttributes decodes the group 0 objects of an application response fragment 
 ```go
 type Config struct {
 	// Outstations are the addresses probed after the self address 0xFFFC.
-	// The default is 10, 1, 1024, 0, 3 and 4.
+	// The default is 10, 1, 1024, 0, 3 and 4. NewWithConfig copies the
+	// slice: the caller keeps its own.
 	Outstations []uint16
 	// Master is the source address of the probes. The default is 1;
 	// outstations commonly answer their configured master only.
@@ -140,4 +133,4 @@ Header is a parsed data-link frame.
 func ParseHeader(b []byte) (Header, error)
 ```
 
-ParseHeader validates a frame's start octets, length and CRCs.
+ParseHeader validates a frame's start octets, length and CRCs. The Header is the caller's: its Data is a copy, not a part of b.

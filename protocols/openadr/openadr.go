@@ -59,10 +59,15 @@ func (f *Fingerprinter) Info() core.Info {
 	}
 }
 
-// Detect probes target.
+// Detect probes target. A target whose host cannot be sent in a Host
+// header (httpx.CheckRequest) is not connected to: Detect returns a
+// *core.DetectError of operation "request".
 func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
 	b := fpx.New(proto)
 	host := hostHeader(target)
+	if err := httpx.CheckRequest("GET", host, "/", nil); err != nil {
+		return core.NoMatch(proto), &core.DetectError{Protocol: proto, Op: "request", Err: err}
+	}
 	var trace []core.Exchange
 	// dialErr is the first failed dial; it is the result's error when no
 	// connection opened at all, so a refused, timed-out or blocked target
@@ -95,7 +100,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 						TokenURL string `json:"tokenURL"`
 					}
 					_ = json.Unmarshal(resp.Body, &tu)
-					b.Identity().Set("tokenUrl", tu.TokenURL)
+					b.Identity().Set("tokenUrl", fpx.Clean(tu.TokenURL))
 				}
 			}
 		}

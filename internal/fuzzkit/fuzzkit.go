@@ -11,10 +11,12 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/otfabric/go-otfp/core"
@@ -27,6 +29,33 @@ const Timeout = 60 * time.Millisecond
 // fingerprinters make a few dozen bounded exchanges; a run far beyond this
 // means an unbounded loop.
 const maxDuration = 64 * Timeout
+
+// maxRunes bounds every string of a result (fpx.MaxLine).
+const maxRunes = 4096
+
+// NonText holds characters that are not text for a terminal or a log line:
+// C0 controls (ESC, BEL, CR, LF, TAB), DEL, C1 controls (NEL, CSI), format
+// characters (a directional override, a zero-width space, a byte order
+// mark), the line and paragraph separators and an octet that is not UTF-8.
+// Tests put it into what a fake endpoint sends and expect none of it in a
+// Result.
+const NonText = "\x1b\a\r\n\t\x7f\u0085\u009b\u202e\u200b\ufeff\u2028\u2029\xff"
+
+// Allocated returns the octets f allocates while it runs, garbage included
+// (runtime.MemStats.TotalAlloc), for the allocation budgets of the limit
+// tests: a budget derived from the input size shows that nothing of a
+// declared or unbounded size was allocated, which a run that merely ends
+// does not. The figure is the whole process's: a test that uses it does not
+// call t.Parallel, and keeps its budget well above the work of a fake peer
+// that runs beside f.
+func Allocated(f func()) uint64 {
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	f()
+	runtime.ReadMemStats(&after)
+	return after.TotalAlloc - before.TotalAlloc
+}
 
 // Split cuts fuzz input into the server's successive replies: each reply
 // is a length octet followed by that many bytes (the last one takes the
@@ -76,6 +105,68 @@ func Detect(t *testing.T, fp core.Fingerprinter, data []byte) {
 			t.Fatalf("%s %s: Detect took %v (bound %v): unbounded exchange", info.Protocol.Slug(), mode, d, maxDuration)
 		}
 		Check(t, info.Protocol, r, err)
+	}
+}
+
+// Limit is one case of a limit test: what the peer answers, in which mode,
+// and how much the probe may allocate for it.
+type Limit struct {
+	Name string
+	// Mode is ModeDetect unless set.
+	Mode core.Mode
+	// Replies are the peer's successive replies, one per request it reads
+	// (as in Detect). A reply at a limit and one just beyond it are the
+	// two cases a limit needs.
+	Replies [][]byte
+	// Budget is the most octets Detect may allocate, garbage included. It
+	// is derived from what the fingerprinter may read for the case, with
+	// room to spare: at a limit a few times the limit, beyond it far less
+	// than the size the peer declared.
+	Budget uint64
+	// Want, when set, checks the outcome.
+	Want func(t *testing.T, r core.Result, err error)
+	// Timeout is the target's timeout; LimitTimeout unless set.
+	Timeout time.Duration
+}
+
+// LimitTimeout is the per-operation timeout of a limit test: long enough
+// for a megabyte to arrive on loopback under the race detector.
+const LimitTimeout = time.Second
+
+// Limits runs fp against a peer for each case and fails t when the result
+// breaks the Fingerprinter contract, when Detect takes longer than any
+// peer may make it take, or when it allocates more than the case's budget.
+// The cases run one after the other: the allocation count is the
+// process's.
+func Limits(t *testing.T, fp core.Fingerprinter, cases ...Limit) {
+	t.Helper()
+	info := fp.Info()
+	for _, c := range cases {
+		target := serve(t, info.Network, c.Replies)
+		target.Timeout = c.Timeout
+		if target.Timeout <= 0 {
+			target.Timeout = LimitTimeout
+		}
+		opts := core.Options{Mode: c.Mode, MaxIntrusiveness: core.ReadOnly}
+		var r core.Result
+		var err error
+		start := time.Now()
+		allocated := Allocated(func() { r, err = fp.Detect(context.Background(), target, opts) })
+		if d, bound := time.Since(start), 64*target.Timeout; d > bound {
+			t.Errorf("%s: Detect took %v (bound %v)", c.Name, d, bound)
+		}
+		if testing.Verbose() {
+			t.Logf("%s: %d octets allocated (budget %d): %v, %v", c.Name, allocated, c.Budget, r, err)
+		}
+		if msg := Violation(info.Protocol, r, err); msg != "" {
+			t.Errorf("%s: %s", c.Name, msg)
+		}
+		if allocated > c.Budget {
+			t.Errorf("%s: %d octets allocated, budget %d", c.Name, allocated, c.Budget)
+		}
+		if c.Want != nil {
+			c.Want(t, r, err)
+		}
 	}
 }
 
@@ -132,9 +223,22 @@ func Violation(p core.Protocol, r core.Result, err error) string {
 			strs = append(strs, k, v)
 		}
 	}
+	// Every string of a result is text for a person or a log: valid UTF-8
+	// of graphic characters only (no control or format character, no line
+	// separator), and bounded.
 	for _, s := range strs {
 		if !utf8.ValidString(s) {
 			return fmt.Sprintf("invalid UTF-8 in result: %q", s)
+		}
+		n := 0
+		for _, r := range s {
+			if !unicode.IsGraphic(r) {
+				return fmt.Sprintf("character %U that is not graphic in result: %q", r, s)
+			}
+			n++
+		}
+		if n > maxRunes {
+			return fmt.Sprintf("result string of %d runes (bound %d): %.80q...", n, maxRunes, s)
 		}
 	}
 	if _, err := json.Marshal(r); err != nil {

@@ -5,6 +5,7 @@ package core
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -12,11 +13,21 @@ import (
 
 // Observer receives scan progress callbacks, e.g. for audit logs or
 // progress bars. Implementations must be safe for concurrent use when
-// EngineConfig.Parallel is set, and must not block.
+// EngineConfig.Parallel is set, and must not block: a callback runs on the
+// goroutine of its probe, with no lock of the engine held, and delays that
+// probe only. It may cancel the scan's context.
+//
+// A callback that does not return normally is recovered by the engine, in
+// sequential and in parallel scans, and becomes the error of that probe's
+// result (a *DetectError of operation "observer"); the scan goes on. When
+// OnStart does not return normally the fingerprinter is not run: an
+// observer that records every probe before it is sent sees no probe it did
+// not record.
 type Observer interface {
 	// OnStart is called before a fingerprinter runs.
 	OnStart(p Protocol, target Target)
-	// OnResult is called after it ran.
+	// OnResult is called after it ran, with the result the scan reports
+	// for it.
 	OnResult(r Result)
 }
 
@@ -26,10 +37,12 @@ type EngineConfig struct {
 	// Mode is passed to each fingerprinter: ModeDetect or ModeIdentify.
 	Mode Mode
 
-	// Trace records raw exchanges in each Result.
+	// Trace records raw exchanges in each Result, within the bounds of
+	// Options.Trace.
 	Trace bool
 
 	// Protocols, when non-empty, restricts the scan to these protocols.
+	// NewEngine copies the slice, and Exclude: the caller keeps its own.
 	Protocols []Protocol
 
 	// Exclude removes protocols from the scan.
@@ -106,22 +119,38 @@ func SafeEngineConfig() EngineConfig {
 }
 
 // Engine runs the fingerprinters of a registry against targets. It is safe
-// for concurrent use.
+// for concurrent use and keeps no state between scans: there is nothing to
+// close. The zero Engine, a nil *Engine and an engine over a nil registry
+// have no fingerprinters: Scan returns ErrNoFingerprinters and Detect a
+// *ProtocolNotFoundError.
 type Engine struct {
 	registry *Registry
 	config   EngineConfig
 }
 
-// NewEngine returns an engine over registry.
+// NewEngine returns an engine over registry. The engine keeps its own copy
+// of config, the Protocols and Exclude slices included; the registry, the
+// Dialer, the Observer and the Logger are shared with the caller.
 func NewEngine(registry *Registry, config EngineConfig) *Engine {
 	if config.HighConfidenceThreshold <= 0 {
 		config.HighConfidenceThreshold = ConfidenceHigh
 	}
+	config.Protocols = slices.Clone(config.Protocols)
+	config.Exclude = slices.Clone(config.Exclude)
 	return &Engine{registry: registry, config: config}
 }
 
-// Config returns the engine's configuration.
-func (e *Engine) Config() EngineConfig { return e.config }
+// Config returns a copy of the engine's configuration: changing it,
+// its Protocols and Exclude slices included, does not change the engine.
+func (e *Engine) Config() EngineConfig {
+	if e == nil {
+		return EngineConfig{}
+	}
+	c := e.config
+	c.Protocols = slices.Clone(c.Protocols)
+	c.Exclude = slices.Clone(c.Exclude)
+	return c
+}
 
 // Report is the outcome of a scan of one target.
 type Report struct {
@@ -154,6 +183,9 @@ func (e *Engine) Scan(ctx context.Context, target Target) (Report, error) {
 	if err := target.Validate(); err != nil {
 		return Report{}, err
 	}
+	if e == nil {
+		return Report{}, ErrNoFingerprinters
+	}
 	plan := e.plan(target)
 	if len(plan) == 0 {
 		return Report{}, ErrNoFingerprinters
@@ -176,6 +208,9 @@ func (e *Engine) Scan(ctx context.Context, target Target) (Report, error) {
 func (e *Engine) Detect(ctx context.Context, target Target, p Protocol) (Result, error) {
 	if err := target.Validate(); err != nil {
 		return Result{}, err
+	}
+	if e == nil {
+		return Result{}, &ProtocolNotFoundError{Protocol: p}
 	}
 	fp := e.registry.Get(p, target.Network)
 	if fp == nil {
@@ -216,14 +251,16 @@ func (e *Engine) plan(target Target) []Fingerprinter {
 	return out
 }
 
-// run executes one fingerprinter and normalises its result.
+// run executes one fingerprinter and normalises its result. The caller's
+// Observer and Logger are called through callback: see Observer.
 func (e *Engine) run(ctx context.Context, fp Fingerprinter, target Target) Result {
 	info := fp.Info()
-	if e.config.Observer != nil {
-		e.config.Observer.OnStart(info.Protocol, target)
-	}
+	var r Result
+	err := e.observe(info.Protocol, "OnStart", func(o Observer) { o.OnStart(info.Protocol, target) })
 	start := time.Now()
-	r, err := e.safeDetect(ctx, fp, target)
+	if err == nil {
+		r, err = e.safeDetect(ctx, fp, target)
+	}
 	if err != nil {
 		x := ErrorResult(info.Protocol, err)
 		x.Exchanges = r.Exchanges
@@ -240,12 +277,54 @@ func (e *Engine) run(ctx context.Context, fp Fingerprinter, target Target) Resul
 	}
 	r.Duration = time.Since(start)
 	if e.config.Logger != nil {
-		e.config.Logger.Debugf("otfp: %s %s: %s", target, info.Protocol.Slug(), r)
+		if err := callback(info.Protocol, "logger", "Logger.Debugf", func() {
+			e.config.Logger.Debugf("otfp: %s %s: %s", target, info.Protocol.Slug(), r)
+		}); err != nil {
+			r = failed(r, err)
+		}
 	}
-	if e.config.Observer != nil {
-		e.config.Observer.OnResult(r)
+	if err := e.observe(info.Protocol, "OnResult", func(o Observer) { o.OnResult(r) }); err != nil {
+		r = failed(r, err)
 	}
 	return r
+}
+
+// observe calls the Observer, when there is one, through callback.
+func (e *Engine) observe(p Protocol, method string, call func(Observer)) error {
+	if e.config.Observer == nil {
+		return nil
+	}
+	return callback(p, "observer", "Observer."+method, func() { call(e.config.Observer) })
+}
+
+// callback runs one call into the caller's code. A call that does not
+// return normally is recovered and reported as a *DetectError of the given
+// operation, so that it ends one probe and not the scan or, on a goroutine
+// of a parallel scan, the process.
+func callback(p Protocol, op, name string, call func()) (err error) {
+	defer func() {
+		if v := recover(); v != nil {
+			err = &DetectError{Protocol: p, Op: op, Err: callbackError{name: name, v: v}}
+		}
+	}()
+	call()
+	return nil
+}
+
+// callbackError is the cause of a callback's DetectError.
+type callbackError struct {
+	name string
+	v    any
+}
+
+func (c callbackError) Error() string { return c.name + " did not return normally: " + toString(c.v) }
+
+// failed returns the error result that replaces r when a callback about r
+// did not return normally: the attempt's identifier, times and trace stay.
+func failed(r Result, err error) Result {
+	x := ErrorResult(r.Protocol, err)
+	x.DetectionID, x.Timestamp, x.Duration, x.Exchanges = r.DetectionID, r.Timestamp, r.Duration, r.Exchanges
+	return x
 }
 
 // safeDetect turns a panicking fingerprinter into an error result so that

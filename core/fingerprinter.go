@@ -16,7 +16,9 @@ const (
 	// identity requests (Read Device Identification, Identity object,
 	// SZL, Identify, ReadProperty of the Device object, GetEndpoints ...)
 	// and fills Result.Identity. It never writes, controls or changes
-	// configuration.
+	// configuration. Where a protocol has no identity service, identify
+	// mode adds nothing by default: IEC 60870-5-104 starts data transfer
+	// only with the option iec104.Fingerprinter.StartDT.
 	ModeIdentify
 )
 
@@ -32,7 +34,10 @@ func (m Mode) String() string {
 type Options struct {
 	// Mode is ModeDetect (the default) or ModeIdentify.
 	Mode Mode
-	// Trace records every probe and response in Result.Exchanges.
+	// Trace records every probe and response in Result.Exchanges. The
+	// trace is bounded: per connection of a fingerprinter at most 256
+	// exchanges and 4 MiB of probes and responses, followed by one entry
+	// that counts what was left out.
 	Trace bool
 	// Logger receives debug output of the exchange. Nil is silent.
 	Logger Logger
@@ -63,7 +68,7 @@ type Intrusiveness uint8
 const (
 	// Passive fingerprinters send a protocol's standard connection
 	// handshake or discovery request only (COTP CR, HEL, Who-Is,
-	// ListIdentity, STARTDT, WebSocket upgrade, HTTP GET).
+	// ListIdentity, TESTFR, WebSocket upgrade, HTTP GET).
 	Passive Intrusiveness = iota
 	// ReadOnly fingerprinters also send read requests to application
 	// data, such as Modbus holding registers for the SunSpec marker.

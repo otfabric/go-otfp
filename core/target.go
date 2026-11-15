@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/otfabric/go-otfp/internal/tlsx"
 )
@@ -18,7 +20,8 @@ const DefaultTimeout = 3 * time.Second
 
 // Target is the endpoint to fingerprint.
 type Target struct {
-	// Host is an IP address or a host name.
+	// Host is an IP address or a host name. It holds no space, control
+	// character or "/": the web fingerprinters send it in a Host header.
 	Host string
 
 	// Port is the TCP or UDP port.
@@ -42,7 +45,9 @@ type Target struct {
 
 	// Path, when set, overrides the WebSocket path OCPP tries first. The
 	// IEEE 2030.5 and OpenADR fingerprinters probe their standard paths and
-	// ignore it.
+	// ignore it. It is the path of an HTTP request line as it is sent
+	// (percent-encoded where needed, a query allowed): it starts with "/"
+	// and holds no space and no control character.
 	Path string
 }
 
@@ -69,11 +74,19 @@ func (t Target) String() string {
 	return scheme + "://" + t.Addr()
 }
 
-// Validate reports the first malformed field: an empty Host, a Port outside
-// 1..65535, a negative Timeout, an unknown Network or TLS on UDP.
+// Validate reports the first malformed field: an empty Host or one that
+// holds a space, a control character or "/", a Port outside 1..65535, a
+// negative Timeout, an unknown Network, TLS on UDP, or a Path that does not
+// start with "/" or holds a space or a control character.
 func (t Target) Validate() error {
 	if t.Host == "" {
 		return fmt.Errorf("empty host")
+	}
+	if strings.ContainsFunc(t.Host, func(r rune) bool { return r <= ' ' || r == '/' || unicode.IsControl(r) }) {
+		return fmt.Errorf("host %q holds a space, a control character or a slash", t.Host)
+	}
+	if t.Path != "" && (t.Path[0] != '/' || strings.ContainsFunc(t.Path, func(r rune) bool { return r <= ' ' || unicode.IsControl(r) })) {
+		return fmt.Errorf("path %q must start with / and hold no space or control character", t.Path)
 	}
 	if t.Port < 1 || t.Port > 65535 {
 		return fmt.Errorf("port %d out of range 1..65535", t.Port)

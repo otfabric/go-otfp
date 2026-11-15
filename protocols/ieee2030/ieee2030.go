@@ -60,8 +60,13 @@ func (f *Fingerprinter) Info() core.Info {
 	}
 }
 
-// Detect probes target.
+// Detect probes target. A target whose host cannot be sent in the Host
+// header of the /dcap request (httpx.CheckRequest) is not connected to:
+// Detect returns a *core.DetectError of operation "request".
 func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
+	if err := httpx.CheckRequest("GET", target.Host, "/dcap", nil); err != nil {
+		return core.NoMatch(proto), &core.DetectError{Protocol: proto, Op: "request", Err: err}
+	}
 	b := fpx.New(proto)
 	serverName := target.Host
 	if target.TLS != nil && target.TLS.ServerName != "" {
@@ -138,7 +143,7 @@ func (f *Fingerprinter) scoreFlight(b *fpx.Builder, fl flight) {
 		b.Meta("cipherSuite", fmt.Sprintf("0x%04X", fl.suite))
 	}
 	if fl.subject != "" {
-		b.Identity().Set("serverCertSubject", fl.subject)
+		b.Identity().Set("serverCertSubject", fpx.Clean(fl.subject))
 	}
 }
 
@@ -172,6 +177,10 @@ func (f *Fingerprinter) readDcap(ctx context.Context, b *fpx.Builder, target cor
 		return nil
 	}
 	ss := wire.Wrap(ctx, proto, target, tc, opts)
+	// The session registered a cancellation hook on ctx: Close releases it
+	// with the connection, so nothing of this read stays on the scan's
+	// context.
+	defer ss.Close() //nolint:errcheck
 	resp, err := httpx.Request(ss, "dcap", "GET", target.Host, "/dcap", map[string]string{"Accept": "application/sep+xml"}, 8192)
 	if err != nil {
 		return ss.Exchanges()
@@ -194,7 +203,7 @@ func parseDcap(b *fpx.Builder, body string) {
 	if _, after, ok := strings.Cut(body, "pollRate=\""); ok {
 		rest := after
 		if j := strings.IndexByte(rest, '"'); j > 0 {
-			b.Identity().Set("pollRate", rest[:j])
+			b.Identity().Set("pollRate", fpx.Clean(rest[:j]))
 		}
 	}
 	for _, link := range []string{"TimeLink", "EndDeviceListLink", "MirrorUsagePointListLink"} {

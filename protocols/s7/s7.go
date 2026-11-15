@@ -21,6 +21,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/otfabric/go-otfp/core"
@@ -52,7 +53,8 @@ const (
 // Config configures the fingerprinter.
 type Config struct {
 	// CalledTSAPs are tried in order until one is confirmed; nil means
-	// 0x0102, 0x0101 and 0x0103 (rack 0, slots 2, 1 and 3).
+	// 0x0102, 0x0101 and 0x0103 (rack 0, slots 2, 1 and 3). NewWithConfig
+	// copies the slice: the caller keeps its own.
 	CalledTSAPs []uint16
 	// CallingTSAP is the local TSAP; zero means 0x0100.
 	CallingTSAP uint16
@@ -69,7 +71,7 @@ func New() *Fingerprinter { return NewWithConfig(Config{}) }
 
 // NewWithConfig returns a fingerprinter with the given configuration.
 func NewWithConfig(c Config) *Fingerprinter {
-	f := &Fingerprinter{called: c.CalledTSAPs, calling: c.CallingTSAP}
+	f := &Fingerprinter{called: slices.Clone(c.CalledTSAPs), calling: c.CallingTSAP}
 	if len(f.called) == 0 {
 		f.called = []uint16{0x0102, 0x0101, 0x0103}
 	}

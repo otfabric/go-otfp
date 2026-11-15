@@ -7,12 +7,22 @@
 // reply must be the confirmation (0x83), not an echo of the activation, so
 // echo services do not match.
 //
-// In identify mode data transfer is started (STARTDT act/con), the frames
-// the station sends on its own within a short window are decoded for the
-// ASDU common address and type identifiers (an end of initialisation,
-// M_EI_NA_1, is common), acknowledged, and data transfer is stopped again
-// (STOPDT). No interrogation or command is sent: IEC 104 has no identity
-// object, and a general interrogation makes the station send its whole
+// Identify mode sends nothing more by default: IEC 104 has no identity
+// object, and everything beyond TESTFR changes the station's state. The
+// result is that of detection, with a line of evidence saying that data
+// transfer was not started.
+//
+// With Fingerprinter.StartDT, an explicit choice of the caller, identify
+// mode starts data transfer (STARTDT act/con), decodes the frames the
+// station sends on its own within a short window for the ASDU common
+// address and type identifiers (an end of initialisation, M_EI_NA_1, is
+// common), acknowledges them, and stops data transfer again (STOPDT). A
+// station gives data transfer to the connection that started it, and takes
+// what was acknowledged off its event queue: on a station with a control
+// centre connected, the control centre stops receiving and does not get
+// the events the probe acknowledged. StartDT is refused under a scan that
+// allows passive probes only. No interrogation or command is sent in
+// either case: a general interrogation makes the station send its whole
 // process image.
 package iec104
 
@@ -44,14 +54,41 @@ const (
 	uStopCon  = 0x23
 
 	maxFrames = 4
+
+	// MaxAPDUs bounds the APDUs read in the listening window of identify
+	// mode with StartDT, however many the station sends in it.
+	MaxAPDUs = 256
+	// maxListed bounds the common addresses and the type identifiers
+	// listed in the identity.
+	maxListed = 16
 )
 
 // Fingerprinter detects IEC 60870-5-104.
 type Fingerprinter struct {
 	// Window is how long identify mode listens for spontaneous frames
-	// after STARTDT. Zero means one second (capped by the target timeout).
+	// after STARTDT, when StartDT is set. Zero means one second (capped by
+	// the target timeout).
 	Window time.Duration
+
+	// StartDT makes identify mode start data transfer on its connection:
+	// STARTDT act, the APDUs of Window read for the common address and the
+	// type identifiers, one S-format acknowledgement of the I-format APDUs
+	// received, and STOPDT act. It is off by default, because it changes
+	// the station: a station gives data transfer to the connection that
+	// started it (with one redundancy group it stops, or closes, the
+	// connection of a control centre), and an acknowledged event leaves
+	// the station's queue and is not sent to the control centre again.
+	//
+	// StartDT needs a scan that allows read-only probes. With StartDT set
+	// and Options.MaxIntrusiveness below core.ReadOnly (the zero Options,
+	// core.SafeEngineConfig), Detect does not connect and returns a
+	// *core.DetectError of operation "startdt", in detect mode too: the
+	// two settings contradict each other, and neither is dropped silently.
+	StartDT bool
 }
+
+// errStartDT is the cause of the error for StartDT under a passive scan.
+var errStartDT = errors.New("StartDT starts data transfer and acknowledges the station's events: it is not sent when the scan allows passive probes only (MaxIntrusiveness below ReadOnly)")
 
 // New returns an IEC 104 fingerprinter.
 func New() *Fingerprinter { return &Fingerprinter{} }
@@ -64,15 +101,19 @@ func (f *Fingerprinter) Info() core.Info {
 		Ports:         []int{2404, 19998},
 		Priority:      30,
 		Intrusiveness: core.Passive,
-		Description:   "APCI TESTFR act/con; STARTDT/STOPDT and the spontaneous ASDUs in between in identify mode",
+		Description:   "APCI TESTFR act/con; with the StartDT option, STARTDT/STOPDT and the spontaneous ASDUs in between in identify mode",
 	}
 }
 
 // U returns a U-format APDU with the given control octet.
 func U(ctrl byte) []byte { return []byte{startByte, 0x04, ctrl, 0x00, 0x00, 0x00} }
 
-// Framer reads one APDU.
-var Framer wire.Framer = func(b []byte) int {
+// Framer reads one APDU. It is a variable for compatibility and is not to
+// be assigned: the fingerprinter frames its reads with the function the
+// variable is initialised with, whatever the variable holds.
+var Framer wire.Framer = frame
+
+func frame(b []byte) int {
 	if len(b) == 0 {
 		return 0
 	}
@@ -99,7 +140,8 @@ type APDU struct {
 	ASDU    []byte
 }
 
-// Parse validates one APDU.
+// Parse validates one APDU. The APDU's ASDU is borrowed: it is the part of
+// b after the control field, not a copy, and changes with b.
 func Parse(b []byte) (APDU, error) {
 	if len(b) < 6 || b[0] != startByte {
 		return APDU{}, fmt.Errorf("not an APDU")
@@ -130,8 +172,11 @@ func Parse(b []byte) (APDU, error) {
 	return APDU{}, fmt.Errorf("u-format function 0x%02x is not defined", c[0])
 }
 
-// Detect probes target.
+// Detect probes target. See StartDT for the one configuration it refuses.
 func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
+	if f.StartDT && opts.MaxIntrusiveness < core.ReadOnly {
+		return core.NoMatch(proto), &core.DetectError{Protocol: proto, Op: "startdt", Err: errStartDT}
+	}
 	b := fpx.New(proto)
 	s, err := wire.Dial(ctx, proto, target, opts)
 	if err != nil {
@@ -139,7 +184,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	}
 	defer s.Close() //nolint:errcheck
 
-	resp, err := s.RoundTrip("testfr", U(uTestAct), Framer, maxAPDU)
+	resp, err := s.RoundTrip("testfr", U(uTestAct), frame, maxAPDU)
 	confirmed := false
 	for i := 0; i < maxFrames && err == nil; i++ {
 		a, perr := Parse(resp)
@@ -163,7 +208,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		} else {
 			b.Score(core.ConfidenceHigh, fmt.Sprintf("valid %c-format APCI before TESTFR con", a.Format))
 		}
-		resp, err = s.Next("frame", Framer, maxAPDU)
+		resp, err = s.Next("frame", frame, maxAPDU)
 	}
 	if !confirmed {
 		if b.Confidence() == 0 && err != nil && !errors.Is(err, wire.ErrClosed) {
@@ -172,13 +217,27 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		return b.Result("iec104.apci", "no TESTFR con", s), nil
 	}
 	if opts.Mode == core.ModeIdentify {
-		f.identify(ctx, b, s, target)
+		if f.StartDT {
+			f.identify(ctx, b, s, target)
+		} else {
+			b.Evidence("data transfer not started: the common address and the ASDU types are read only with STARTDT, which is opt-in")
+		}
 	}
 	return b.Result("iec104.apci", "IEC 60870-5-104 controlled station", s), nil
 }
 
+// sFormat returns the S-format APDU that acknowledges the I-format APDUs
+// up to send sequence number lastNS: N(R) is lastNS+1 modulo 2^15 (IEC
+// 60870-5-104 clause 5.1), in the upper 15 bits of the last two control
+// octets.
+func sFormat(lastNS uint16) []byte {
+	nr := (lastNS + 1) & 0x7FFF
+	return []byte{startByte, 0x04, 0x01, 0x00, byte(nr << 1), byte(nr >> 7)}
+}
+
+// identify is the StartDT exchange of identify mode.
 func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, s *wire.Session, target core.Target) {
-	resp, err := s.RoundTrip("startdt", U(uStartAct), Framer, maxAPDU)
+	resp, err := s.RoundTrip("startdt", U(uStartAct), frame, maxAPDU)
 	if err != nil {
 		b.Evidence("STARTDT not confirmed")
 		return
@@ -190,9 +249,13 @@ func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, s *wire.Se
 	window = min(window, target.EffectiveTimeout())
 	deadline := time.Now().Add(window)
 	started := false
+	// At most MaxAPDUs APDUs are read, so each map holds at most that
+	// many entries.
 	cas := map[uint16]bool{}
 	types := map[byte]bool{}
-	var recv uint16
+	var lastNS uint16
+	received := false // an I-format APDU arrived
+	read := 1         // APDUs read: the answer to STARTDT is the first
 	for ctx.Err() == nil {
 		if a, perr := Parse(resp); perr == nil {
 			switch {
@@ -202,7 +265,7 @@ func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, s *wire.Se
 			case a.Format == 'U' && a.U == uTestAct:
 				_ = s.Send(U(uTestCon))
 			case a.Format == 'I':
-				recv = a.SendSeq + 1
+				lastNS, received = a.SendSeq, true
 				if t, ca, ok := asduHeader(a.ASDU); ok {
 					types[t] = true
 					cas[ca] = true
@@ -212,10 +275,15 @@ func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, s *wire.Se
 		if time.Now().After(deadline) {
 			break
 		}
-		resp, err = s.ReadUntil(Framer, maxAPDU, deadline)
+		if read >= MaxAPDUs {
+			b.Evidence(fmt.Sprintf("listening stopped after %d APDUs", MaxAPDUs))
+			break
+		}
+		resp, err = s.ReadUntil(frame, maxAPDU, deadline)
 		if err != nil {
 			break
 		}
+		read++
 		s.Record("spontaneous", nil, resp)
 	}
 	if !started {
@@ -223,10 +291,10 @@ func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, s *wire.Se
 		return
 	}
 	b.Evidence("STARTDT con")
-	if recv > 0 {
-		_ = s.Send([]byte{startByte, 0x04, 0x01, 0x00, byte(recv << 1), byte(recv >> 7)})
+	if received {
+		_ = s.Send(sFormat(lastNS))
 	}
-	_, _ = s.RoundTrip("stopdt", U(uStopAct), Framer, maxAPDU)
+	_, _ = s.RoundTrip("stopdt", U(uStopAct), frame, maxAPDU)
 
 	id := b.Identity()
 	if len(cas) > 0 {
@@ -234,21 +302,29 @@ func (f *Fingerprinter) identify(ctx context.Context, b *fpx.Builder, s *wire.Se
 		for ca := range cas {
 			list = append(list, int(ca))
 		}
-		sort.Ints(list)
-		id.Set("commonAddress", joinInts(list))
-		b.Evidence(fmt.Sprintf("common address %s", joinInts(list)))
+		id.Set("commonAddress", listInts(list))
+		b.Evidence(fmt.Sprintf("common address %s", listInts(list)))
 	}
 	if len(types) > 0 {
 		var list []int
 		for t := range types {
 			list = append(list, int(t))
 		}
-		sort.Ints(list)
-		id.Set("asduTypes", joinInts(list))
+		id.Set("asduTypes", listInts(list))
 		if types[70] {
 			b.Evidence("end of initialisation (M_EI_NA_1) received")
 		}
 	}
+}
+
+// listInts returns the maxListed lowest values of v in order, separated by
+// commas, and how many more there are.
+func listInts(v []int) string {
+	sort.Ints(v)
+	if len(v) <= maxListed {
+		return joinInts(v)
+	}
+	return fmt.Sprintf("%s (+%d more)", joinInts(v[:maxListed]), len(v)-maxListed)
 }
 
 // asduHeader returns the type identification and common address of an

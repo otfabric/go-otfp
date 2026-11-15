@@ -18,7 +18,7 @@ In identify mode the common model (model 1: manufacturer, model, options, versio
 var DefaultBases = []uint16{40000, 0, 50000, 39999, 40001, 1, 49999, 50001}
 ```
 
-DefaultBases are the base addresses tried, in order.
+DefaultBases are the base addresses tried, in order. NewWithConfig copies them when Config.Bases is empty: change the variable, if at all, before fingerprinters are constructed and not while one is; a fingerprinter keeps the addresses it was constructed with.
 
 ## Types
 
@@ -48,6 +48,7 @@ type Config struct {
 	// UnitID is the Modbus unit probed; zero means 1.
 	UnitID byte
 	// Bases are the base addresses tried; nil means DefaultBases.
+	// NewWithConfig copies the slice: the caller keeps its own.
 	Bases []uint16
 }
 ```

@@ -16,6 +16,7 @@
 package mms
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -84,7 +85,8 @@ const (
 // Config configures the fingerprinter.
 type Config struct {
 	// CallingTSEL and CalledTSEL are the transport selectors of the COTP
-	// CR; nil means 0x0001, the IEC 61850 default.
+	// CR; nil means 0x0001, the IEC 61850 default. NewWithConfig copies
+	// them: the caller keeps its own slices.
 	CallingTSEL, CalledTSEL []byte
 }
 
@@ -98,7 +100,7 @@ func New() *Fingerprinter { return NewWithConfig(Config{}) }
 
 // NewWithConfig returns a fingerprinter with the given configuration.
 func NewWithConfig(c Config) *Fingerprinter {
-	f := &Fingerprinter{calling: c.CallingTSEL, called: c.CalledTSEL}
+	f := &Fingerprinter{calling: bytes.Clone(c.CallingTSEL), called: bytes.Clone(c.CalledTSEL)}
 	if f.calling == nil {
 		f.calling = []byte{0x00, 0x01}
 	}
@@ -220,19 +222,31 @@ func (f *Fingerprinter) judgeAssociation(b *fpx.Builder, user []byte) bool {
 	if ir, ok := find(aare, tagInitiateResponse); ok {
 		b.Score(core.ConfidenceCertain, "MMS Initiate-Response")
 		b.Sig("initiate", "response")
+		// Initiate-ResponsePDU (ISO 9506-2): localDetailCalled is an
+		// Integer32, the two negotiatedMaxServOutstanding fields and
+		// negotiatedVersionNumber are Integer16. A field whose contents
+		// are not such an integer is left out.
 		if v, ok := find(ir, 0x80); ok {
-			b.Meta("localDetailCalled", fmt.Sprint(uintOf(v)))
+			if n, ok := integer(v, 32); ok {
+				b.Meta("localDetailCalled", fmt.Sprint(n))
+			}
 		}
 		if v, ok := find(ir, 0x81); ok {
-			b.Meta("maxServOutstandingCalling", fmt.Sprint(uintOf(v)))
+			if n, ok := integer(v, 16); ok {
+				b.Meta("maxServOutstandingCalling", fmt.Sprint(n))
+			}
 		}
 		if v, ok := find(ir, 0x82); ok {
-			b.Meta("maxServOutstandingCalled", fmt.Sprint(uintOf(v)))
+			if n, ok := integer(v, 16); ok {
+				b.Meta("maxServOutstandingCalled", fmt.Sprint(n))
+			}
 		}
 		if d, ok := find(ir, 0xa4); ok {
 			if v, ok := find(d, 0x80); ok {
-				b.Meta("version", fmt.Sprint(uintOf(v)))
-				b.Sig("v", fmt.Sprint(uintOf(v)))
+				if n, ok := integer(v, 16); ok {
+					b.Meta("version", fmt.Sprint(n))
+					b.Sig("v", fmt.Sprint(n))
+				}
 			}
 		}
 		return true
@@ -410,10 +424,22 @@ func findDepth(b []byte, path []byte, depth int) ([]byte, bool) {
 	return nil, false
 }
 
-func uintOf(b []byte) uint64 {
-	var x uint64
-	for _, c := range b {
-		x = x<<8 | uint64(c)
+// integer decodes the contents octets of a BER INTEGER (two's complement,
+// most significant octet first; ITU-T X.690 clause 8.3) declared as an
+// integer of the given number of bits (8, 16 or 32). It reports false for
+// empty contents, for more than eight octets, and for a value outside the
+// range of the declared type: such contents are not truncated. Leading
+// octets that only repeat the sign are accepted, as some stacks send them.
+func integer(b []byte, bits uint) (int64, bool) {
+	if len(b) == 0 || len(b) > 8 {
+		return 0, false
 	}
-	return x
+	v := int64(int8(b[0])) // the first octet carries the sign
+	for _, c := range b[1:] {
+		v = v<<8 | int64(c)
+	}
+	if limit := int64(1) << (bits - 1); v < -limit || v >= limit {
+		return 0, false
+	}
+	return v, true
 }

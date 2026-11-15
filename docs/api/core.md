@@ -185,7 +185,7 @@ type Engine struct {
 }
 ```
 
-Engine runs the fingerprinters of a registry against targets. It is safe for concurrent use.
+Engine runs the fingerprinters of a registry against targets. It is safe for concurrent use and keeps no state between scans: there is nothing to close. The zero Engine, a nil \*Engine and an engine over a nil registry have no fingerprinters: Scan returns ErrNoFingerprinters and Detect a \*ProtocolNotFoundError.
 
 #### func NewEngine
 
@@ -193,7 +193,7 @@ Engine runs the fingerprinters of a registry against targets. It is safe for con
 func NewEngine(registry *Registry, config EngineConfig) *Engine
 ```
 
-NewEngine returns an engine over registry.
+NewEngine returns an engine over registry. The engine keeps its own copy of config, the Protocols and Exclude slices included; the registry, the Dialer, the Observer and the Logger are shared with the caller.
 
 #### func (Engine) Config
 
@@ -201,7 +201,7 @@ NewEngine returns an engine over registry.
 func (e *Engine) Config() EngineConfig
 ```
 
-Config returns the engine's configuration.
+Config returns a copy of the engine's configuration: changing it, its Protocols and Exclude slices included, does not change the engine.
 
 #### func (Engine) Detect
 
@@ -226,10 +226,12 @@ type EngineConfig struct {
 	// Mode is passed to each fingerprinter: ModeDetect or ModeIdentify.
 	Mode Mode
 
-	// Trace records raw exchanges in each Result.
+	// Trace records raw exchanges in each Result, within the bounds of
+	// Options.Trace.
 	Trace bool
 
 	// Protocols, when non-empty, restricts the scan to these protocols.
+	// NewEngine copies the slice, and Exclude: the caller keeps its own.
 	Protocols []Protocol
 
 	// Exclude removes protocols from the scan.
@@ -443,7 +445,7 @@ Intrusiveness grades what a fingerprinter puts on the wire, so that careful scan
 const (
 	// Passive fingerprinters send a protocol's standard connection
 	// handshake or discovery request only (COTP CR, HEL, Who-Is,
-	// ListIdentity, STARTDT, WebSocket upgrade, HTTP GET).
+	// ListIdentity, TESTFR, WebSocket upgrade, HTTP GET).
 	Passive Intrusiveness = iota
 	// ReadOnly fingerprinters also send read requests to application
 	// data, such as Modbus holding registers for the SunSpec marker.
@@ -489,7 +491,7 @@ type Logger interface {
 }
 ```
 
-Logger receives debug and diagnostic output. Logging is silent by default. Methods are called synchronously and must not block.
+Logger receives debug and diagnostic output. Logging is silent by default. Methods are called synchronously and must not block; with EngineConfig.Parallel they are called from several goroutines at once. A method that does not return normally is recovered where the engine and the fingerprinters call it, and becomes the error of that probe's result (a \*DetectError).
 
 #### func NewSlogLogger
 
@@ -524,7 +526,9 @@ const (
 	// identity requests (Read Device Identification, Identity object,
 	// SZL, Identify, ReadProperty of the Device object, GetEndpoints ...)
 	// and fills Result.Identity. It never writes, controls or changes
-	// configuration.
+	// configuration. Where a protocol has no identity service, identify
+	// mode adds nothing by default: IEC 60870-5-104 starts data transfer
+	// only with the option iec104.Fingerprinter.StartDT.
 	ModeIdentify
 )
 ```
@@ -596,12 +600,15 @@ UnmarshalText decodes "tcp" or "udp".
 type Observer interface {
 	// OnStart is called before a fingerprinter runs.
 	OnStart(p Protocol, target Target)
-	// OnResult is called after it ran.
+	// OnResult is called after it ran, with the result the scan reports
+	// for it.
 	OnResult(r Result)
 }
 ```
 
-Observer receives scan progress callbacks, e.g. for audit logs or progress bars. Implementations must be safe for concurrent use when EngineConfig.Parallel is set, and must not block.
+Observer receives scan progress callbacks, e.g. for audit logs or progress bars. Implementations must be safe for concurrent use when EngineConfig.Parallel is set, and must not block: a callback runs on the goroutine of its probe, with no lock of the engine held, and delays that probe only. It may cancel the scan's context.
+
+A callback that does not return normally is recovered by the engine, in sequential and in parallel scans, and becomes the error of that probe's result (a \*DetectError of operation "observer"); the scan goes on. When OnStart does not return normally the fingerprinter is not run: an observer that records every probe before it is sent sees no probe it did not record.
 
 ### type Options
 
@@ -609,7 +616,10 @@ Observer receives scan progress callbacks, e.g. for audit logs or progress bars.
 type Options struct {
 	// Mode is ModeDetect (the default) or ModeIdentify.
 	Mode Mode
-	// Trace records every probe and response in Result.Exchanges.
+	// Trace records every probe and response in Result.Exchanges. The
+	// trace is bounded: per connection of a fingerprinter at most 256
+	// exchanges and 4 MiB of probes and responses, followed by one entry
+	// that counts what was left out.
 	Trace bool
 	// Logger receives debug output of the exchange. Nil is silent.
 	Logger Logger
@@ -758,7 +768,7 @@ type Registry struct {
 }
 ```
 
-Registry holds fingerprinters, at most one per protocol and network. It is safe for concurrent use.
+Registry holds fingerprinters, at most one per protocol and network. It is safe for concurrent use. The zero value is an empty registry, ready to use; a nil \*Registry holds nothing and refuses Register.
 
 #### func NewRegistry
 
@@ -774,7 +784,7 @@ NewRegistry returns an empty registry.
 func (r *Registry) All() []Fingerprinter
 ```
 
-All returns every fingerprinter, ordered by Priority then protocol.
+All returns every fingerprinter, ordered by Priority then protocol. The slice is the caller's.
 
 #### func (Registry) Get
 
@@ -814,7 +824,7 @@ Protocols returns the distinct protocols registered, in numeric order.
 func (r *Registry) Register(fp Fingerprinter) error
 ```
 
-Register adds fp. It fails when a fingerprinter for the same protocol and network is already registered, or when Info reports an invalid protocol.
+Register adds fp. It fails when fp is nil, when a fingerprinter for the same protocol and network is already registered, or when Info reports an invalid protocol.
 
 ### type Report
 
@@ -967,7 +977,8 @@ WithIdentity returns r with Identity set, unless id holds nothing.
 
 ```go
 type Target struct {
-	// Host is an IP address or a host name.
+	// Host is an IP address or a host name. It holds no space, control
+	// character or "/": the web fingerprinters send it in a Host header.
 	Host string
 
 	// Port is the TCP or UDP port.
@@ -991,7 +1002,9 @@ type Target struct {
 
 	// Path, when set, overrides the WebSocket path OCPP tries first. The
 	// IEEE 2030.5 and OpenADR fingerprinters probe their standard paths and
-	// ignore it.
+	// ignore it. It is the path of an HTTP request line as it is sent
+	// (percent-encoded where needed, a query allowed): it starts with "/"
+	// and holds no space and no control character.
 	Path string
 }
 ```
@@ -1036,7 +1049,7 @@ String returns network://host:port, e.g. "tcp://10.0.0.5:502", with "+tls" appen
 func (t Target) Validate() error
 ```
 
-Validate reports the first malformed field: an empty Host, a Port outside 1..65535, a negative Timeout, an unknown Network or TLS on UDP.
+Validate reports the first malformed field: an empty Host or one that holds a space, a control character or "/", a Port outside 1..65535, a negative Timeout, an unknown Network, TLS on UDP, or a Path that does not start with "/" or holds a space or a control character.
 
 ### type TimeoutError
 
@@ -1057,6 +1070,14 @@ TimeoutError is a dial, write or read that exceeded its deadline.
 ```go
 func (e *TimeoutError) Error() string
 ```
+
+#### func (TimeoutError) Is
+
+```go
+func (e *TimeoutError) Is(target error) bool
+```
+
+Is reports whether target is context.DeadlineExceeded: every timeout of a probe matches it with errors.Is, whether the scan's context or the target's own Timeout ended the operation.
 
 #### func (TimeoutError) Unwrap
 

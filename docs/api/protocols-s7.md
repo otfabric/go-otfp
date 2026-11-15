@@ -19,7 +19,8 @@ In identify mode the system status lists 0x0011 (module identification: order nu
 ```go
 type Config struct {
 	// CalledTSAPs are tried in order until one is confirmed; nil means
-	// 0x0102, 0x0101 and 0x0103 (rack 0, slots 2, 1 and 3).
+	// 0x0102, 0x0101 and 0x0103 (rack 0, slots 2, 1 and 3). NewWithConfig
+	// copies the slice: the caller keeps its own.
 	CalledTSAPs []uint16
 	// CallingTSAP is the local TSAP; zero means 0x0100.
 	CallingTSAP uint16
