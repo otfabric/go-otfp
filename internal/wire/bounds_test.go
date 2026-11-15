@@ -259,3 +259,75 @@ type closeCounter struct {
 }
 
 func (c *closeCounter) Close() error { c.closes++; return c.err }
+
+// failOn is a Logger whose Debugf does not return normally for a line
+// holding the given text.
+type failOn struct {
+	core.Logger
+	text string
+}
+
+func (l failOn) Debugf(format string, args ...any) {
+	if line := fmt.Sprintf(format, args...); strings.Contains(line, l.text) {
+		panic(line)
+	}
+}
+
+// A Logger that does not return normally closes the session before the
+// panic goes on, on every line the session logs: an exchange, and the count
+// of discarded datagrams.
+func TestLoggerFailureClosesSession(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		run  func(*Session)
+	}{
+		{"label", func(s *Session) { s.Record("label", []byte("p"), nil) }},
+		{"more datagrams discarded", func(s *Session) {
+			_, _ = s.RoundTripDatagram("probe", []byte("probe"), 64, stale)
+		}},
+	} {
+		c := &closeCounter{fakeConn: fakeConn{reads: append(strays(20, "stale"), readResult{data: []byte("answer")})}}
+		s := newSession(context.Background(), core.ProtocolBACnet, "192.0.2.1:47808", c, true, time.Second, core.Options{Logger: failOn{core.NopLogger(), tc.text}})
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s: the Logger's panic did not go on", tc.text)
+				}
+			}()
+			tc.run(s)
+		}()
+		if c.closes != 1 {
+			t.Errorf("%s: the connection was closed %d times, want 1", tc.text, c.closes)
+		}
+	}
+	// A Logger that returns leaves the session open.
+	c := &closeCounter{}
+	s := newSession(context.Background(), core.ProtocolModbus, "192.0.2.1:502", c, false, time.Second, core.Options{Logger: failOn{core.NopLogger(), "never"}})
+	s.Record("label", nil, nil)
+	if c.closes != 0 {
+		t.Errorf("closed %d times after a Logger that returned", c.closes)
+	}
+	_ = s.Close()
+}
+
+// panicDeadline is a connection whose SetDeadline does not return normally.
+type panicDeadline struct {
+	fakeConn
+	called chan struct{}
+}
+
+func (c *panicDeadline) SetDeadline(time.Time) error {
+	close(c.called)
+	panic("SetDeadline")
+}
+
+// The cancellation hook survives a connection whose SetDeadline does not
+// return normally.
+func TestCancelHookRecovers(t *testing.T) {
+	c := &panicDeadline{called: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	s := newSession(ctx, core.ProtocolModbus, "192.0.2.1:502", c, false, time.Second, core.Options{})
+	cancel()
+	<-c.called
+	_ = s.Close()
+}

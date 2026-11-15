@@ -3,6 +3,43 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## v0.9.0
+
+**Date:** 2026-11-15
+**Previous release:** v0.8.1
+
+Library changes are those of go-otfp v0.9.0. No exported identifier is added, removed or changed. `otprobe` v0.9.0 is still built on go-otfp v0.8.0, as a nested module that requires a released library: the entries marked `otprobe` below take effect in v0.9.0, and the library entries reach `otprobe` with the release that builds it on v0.9.0.
+
+### Breaking
+
+- **DNP3: a station whose LINK_STATUS comes from a reserved address is not identified.** In identify mode the READ goes to the address the LINK_STATUS came from; when that is a reserved address (0xFFF0–0xFFFF, the self address 0xFFFC included), no READ is sent. The station is still detected (same confidence and outstation address), but its result has no `Identity` and one evidence line says that identify was skipped. A caller that needs the identity of such a station reads it with a DNP3 master at the outstation's own address.
+- **KNX: only a DESCRIPTION_RESPONSE ends the UDP round trip.** A datagram of another KNXnet/IP service (a SEARCH_RESPONSE, for example) or the request's echo no longer ends it: it is kept and judged at the end of the window when no DESCRIPTION_RESPONSE arrived. A peer that answers with another service now takes up to the full window (`Target.Timeout`) before its result; a caller that scans many such peers sets `Target.Timeout` to the wait it accepts.
+- **MMS: a high tag number of more than four octets is refused.** The BER decoder no longer accepts it as a TLV, so a reply that depends on one does not decode there. No MMS, ACSE or presentation tag needs more than four octets; a caller has nothing to change unless it relied on such a reply.
+
+### Changed
+
+- MMS: the BER search of a reply is linear in its length (at most 16 nesting levels); a high tag number is accepted with at most four tag octets.
+- DNP3: identify sends its READ from the configured master address (`dnp3.Config.Master`), whatever master the LINK_STATUS named, and sends none to a reserved source address (0xFFF0–0xFFFF); such a station is still detected.
+- KNX: only a DESCRIPTION_RESPONSE ends the round trip; another KNXnet/IP service or an echo is judged at the end of the window.
+- Engine: in parallel scans a probe the early stop cancelled is not reported, whatever it returned (before, only a probe that returned `context.Canceled` was left out).
+- OPC UA: the endpoint URL of the HEL brackets an IPv6 literal (`opc.tcp://[::1]:4840`).
+- API.md, OBSERVABILITY.md, FINGERPRINTS.md and SECURITY.md describe the changes above.
+
+- `otprobe`: a port sweep keeps the `--safe` (250 ms) and `--min-interval` gap between the ports that are probed too, and adds no wait for ports that no selected protocol uses.
+- `otprobe`: an error message on stderr is printed as text, with control characters escaped (an unknown flag is no longer repeated raw).
+- `otprobe`: a progress or debug callback of the engine that fails (a `*core.DetectError` of operation `observer` or `logger`) now exits 10 (internal) instead of 4 (transport). docs/exitcodes.md says so.
+- `otprobe`: `--help` and docs/cli.md state that an explicit `--min-interval`, `--parallel` or `--all` takes precedence over `--safe`.
+- CI: the nightly fuzz time input is passed through the environment and checked as a duration or a count.
+
+### Fixed
+
+- MMS: a scan whose context ends during identify reports the cancellation (a `*core.DetectError` or `*core.TimeoutError` that matches the context's error) instead of a result.
+- Modbus, MQTT, S7, OpenADR, IEEE 2030.5, Sparkplug B: the connection is closed on every return path, including when a `Logger` does not return normally; `internal/wire` closes the session in that case too.
+- Sparkplug B: a fingerprinter made by `New` no longer reads `sparkplugb.Filters` during `Detect`.
+- Sessions: a connection from a caller's `Dialer` whose `SetDeadline` does not return normally no longer ends the process when the scan is cancelled.
+
+---
+
 ## v0.8.1
 
 **Date:** 2026-11-15

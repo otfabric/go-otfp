@@ -114,11 +114,20 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	if clientID == "" {
 		clientID = mqtt.ClientID()
 	}
+	// Every session is closed on return, also when a caller callback
+	// does not return normally; the DISCONNECT stays where it is.
+	var opened []*wire.Session
+	defer func() {
+		for _, s := range opened {
+			_ = s.Close()
+		}
+	}()
 	connect := func(level byte) (*mqtt.Client, mqtt.Connack, error, error) {
 		c, err := mqtt.Dial(ctx, proto, target, opts, MaxPacket)
 		if err != nil {
 			return nil, mqtt.Connack{}, nil, err
 		}
+		opened = append(opened, c.S)
 		ack, cerr := c.Connect(level, clientID)
 		if cerr != nil || !ack.Accepted() {
 			_ = c.Close()
@@ -160,9 +169,12 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 func (f *Fingerprinter) listen(ctx context.Context, c *mqtt.Client, target core.Target, opts core.Options, o *observer) {
 	// One list for the whole exchange: the SUBSCRIBE, the count of the
 	// SUBACK's codes and the UNSUBSCRIBE agree.
-	filters := slices.Clone(Filters)
+	// Filters is read only for a Fingerprinter that New did not make.
+	var filters []string
 	if f.filters != "" {
 		filters = strings.Split(f.filters, "\x00")
+	} else {
+		filters = slices.Clone(Filters)
 	}
 	id, err := c.Subscribe(filters...)
 	if err != nil {

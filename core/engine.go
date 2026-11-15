@@ -461,8 +461,10 @@ func (e *Engine) runParallel(ctx context.Context, target Target, plan []Fingerpr
 			mu.Lock()
 			defer mu.Unlock()
 			delete(running, i)
-			if killedBy[i] && errors.Is(r.Error, context.Canceled) {
-				return // cancelled by our own early stop: not a result
+			if killedBy[i] {
+				// Cancelled by our own early stop: not a result, whatever
+				// the fingerprinter made of the cancellation.
+				return
 			}
 			results = append(results, r)
 			if stopped {

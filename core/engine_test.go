@@ -190,6 +190,35 @@ func TestParallelEarlyStopDropsCancelled(t *testing.T) {
 	}
 }
 
+// quietOnCancel is a fingerprinter that maps a cancellation to a no-match
+// without an error, as a probe with partial evidence may.
+type quietOnCancel struct{ info Info }
+
+func (q quietOnCancel) Info() Info { return q.info }
+func (q quietOnCancel) Detect(ctx context.Context, _ Target, _ Options) (Result, error) {
+	select {
+	case <-ctx.Done():
+		return NoMatch(q.info.Protocol), nil
+	case <-time.After(5 * time.Second):
+		return NoMatch(q.info.Protocol), nil
+	}
+}
+
+// A probe the early stop cancelled is not reported even when it returns no
+// error for the cancellation.
+func TestParallelEarlyStopDropsQuietCancelled(t *testing.T) {
+	fast := &fakeFP{info: Info{Protocol: ProtocolModbus, Network: TCP, Priority: 1}, result: mod(ProtocolModbus, ConfidenceCertain)}
+	slow := quietOnCancel{info: Info{Protocol: ProtocolS7, Network: TCP, Priority: 2}}
+	cfg := DefaultEngineConfig()
+	cfg.Parallel = true
+	rep, _ := NewEngine(NewRegistry().MustRegister(fast, slow), cfg).Scan(context.Background(), Target{Host: "127.0.0.1", Port: 502})
+	for _, r := range rep.Results {
+		if r.Protocol == ProtocolS7 {
+			t.Fatalf("cancelled probe reported: %v", r)
+		}
+	}
+}
+
 // A caller's cancellation is still reported (it is not the engine's own).
 func TestParallelCallerCancel(t *testing.T) {
 	slow := &fakeFP{info: Info{Protocol: ProtocolS7, Network: TCP}, result: NoMatch(ProtocolS7), delay: 5 * time.Second}

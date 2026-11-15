@@ -76,6 +76,19 @@ func TestHelloProbe(t *testing.T) {
 	}
 }
 
+func TestEndpointURL(t *testing.T) {
+	for host, want := range map[string]string{
+		"127.0.0.1":   "opc.tcp://127.0.0.1:4840",
+		"plc.example": "opc.tcp://plc.example:4840",
+		"::1":         "opc.tcp://[::1]:4840",
+		"fe80::1%en0": "opc.tcp://[fe80::1%en0]:4840",
+	} {
+		if got := endpointURL(core.Target{Host: host, Port: 4840}); got != want {
+			t.Errorf("%s: %s, want %s", host, got, want)
+		}
+	}
+}
+
 func TestNotOPCUA(t *testing.T) {
 	for name, resp := range map[string][]byte{
 		"http":   []byte("HTTP/1.1 200 OK\r\n\r\n"),

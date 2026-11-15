@@ -286,8 +286,10 @@ $ echo $?
 Without a port, `otprobe` sweeps the well-known ports of the selected
 protocols (`--ports` gives an explicit list) and tries, on each port, only
 the protocols registered for it. Closed ports are summarised at the end.
-`--safe` keeps to passive probes and paces them 250 ms apart; it refuses
-`--iec104-startdt`:
+`--safe` keeps to passive probes and paces them 250 ms apart, from one port
+of the sweep to the next too; it refuses `--iec104-startdt`. A
+`--min-interval`, `--parallel` or `--all` given with `--safe` takes
+precedence over its pacing, its sequential probes and its early stop:
 
 ```console
 $ otprobe detect 127.0.0.1 --safe
@@ -692,9 +694,9 @@ Run `otprobe detect --help` for the full list:
 | `--deadline` | deadline for the whole scan |
 | `--protocol`, `--exclude` | select or skip protocols (`otprobe list`) |
 | `-i, --identify` | read the device identity |
-| `--safe` | passive probes, likely protocols only, 250 ms pacing; refuses `--iec104-startdt` |
+| `--safe` | passive probes, likely protocols only, 250 ms pacing (also between the ports of a sweep); refuses `--iec104-startdt`; an explicit `--min-interval`, `--parallel` or `--all` takes precedence |
 | `--parallel`, `--max-concurrency` | concurrent probes (off by default) |
-| `--min-interval` | delay between probes |
+| `--min-interval` | delay between probes, and between the ports of a sweep |
 | `--all` | run every probe, no early stop |
 | `--path` | WebSocket path OCPP tries first, starting with `/` (e.g. `/ocpp/<station id>`) |
 | `--canopen-node` | CANopen node (1-127) identified through a CiA 309-3 gateway (default: the gateway's default node) |

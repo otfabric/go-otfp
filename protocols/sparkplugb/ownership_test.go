@@ -4,6 +4,7 @@ package sparkplugb
 
 import (
 	"bytes"
+	"context"
 	"slices"
 	"strings"
 	"testing"
@@ -57,4 +58,33 @@ func subscribePacket(t *testing.T, r core.Result) []byte {
 	}
 	t.Fatalf("no SUBSCRIBE in the trace of %v", r)
 	return nil
+}
+
+// A fingerprinter made by New does not read Filters during Detect: the
+// variable may be changed while it runs (under -race, a read would be
+// reported).
+func TestDetectDoesNotReadFilters(t *testing.T) {
+	original := Filters
+	t.Cleanup(func() { Filters = original })
+	f := New()
+	f.Window = 100 * time.Millisecond
+	b := &broker{connack: accept, codes: make([]byte, len(Filters))} // the broker does not read Filters either
+	target := b.target(t)
+	done := make(chan error, 1)
+	go func() {
+		_, err := f.Detect(context.Background(), target, detect)
+		done <- err
+	}()
+	for {
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatal(err)
+			}
+			return
+		default:
+			Filters = []string{"other/#"}
+			time.Sleep(time.Millisecond)
+		}
+	}
 }

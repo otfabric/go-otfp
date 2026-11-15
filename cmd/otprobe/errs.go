@@ -92,7 +92,9 @@ func render(err error, jsonOut bool, stdout, stderr io.Writer) int {
 		enc.SetIndent("", "  ")
 		_ = enc.Encode(doc)
 	} else {
-		fmt.Fprintln(stderr, "error:", ce.message)
+		// The message can quote the command line (pflag repeats an
+		// unknown flag as given), so the terminal gets it as text.
+		fmt.Fprintln(stderr, "error:", printable(ce.message))
 	}
 	return ce.exitCode()
 }

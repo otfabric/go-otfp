@@ -169,6 +169,11 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	associated := f.judgeAssociation(b, user)
 	if associated && opts.Mode == core.ModeIdentify {
 		f.identify(b, s)
+		if cerr := ctx.Err(); cerr != nil {
+			// The scan ended during identify: report that, not a
+			// verdict made after it.
+			return b.Result("mms.initiate", "cancelled", s), core.ClassifyIO(proto, target.Addr(), "identify", cerr)
+		}
 	}
 	if associated {
 		_, _ = s.RoundTrip("conclude", iso.Data(presentationData(concludeRequest)), iso.Framer, maxFrame)
@@ -353,9 +358,16 @@ func tlv(tag byte, v []byte) []byte {
 	return append(out, v...)
 }
 
+// maxTagOctets bounds the subsequent octets of a high tag number (ITU-T
+// X.690 clause 8.1.2.4): four carry tag numbers up to 2^28, far beyond
+// any MMS, ACSE or presentation tag, and keep next constant-time on runs
+// of octets with bit 8 set.
+const maxTagOctets = 4
+
 // next splits the first BER TLV off b. Tags are one octet (the protocols
-// probed here use no high tag numbers that matter); the indefinite length
-// is not supported.
+// probed here use no high tag numbers that matter; a high tag number of
+// more than maxTagOctets subsequent octets is not accepted); the indefinite
+// length is not supported.
 func next(b []byte) (tag byte, val, rest []byte, ok bool) {
 	if len(b) < 2 {
 		return 0, nil, nil, false
@@ -363,7 +375,11 @@ func next(b []byte) (tag byte, val, rest []byte, ok bool) {
 	tag, l := b[0], int(b[1])
 	p := 2
 	if tag&0x1f == 0x1f { // high tag number: skip its octets
-		for p-1 < len(b) && b[p-1]&0x80 != 0 {
+		// b[p-1] is the n-th subsequent octet; bit 8 says another follows.
+		for n := 1; b[p-1]&0x80 != 0; n++ {
+			if n == maxTagOctets || p >= len(b) {
+				return 0, nil, nil, false
+			}
 			p++
 		}
 		if p >= len(b) {
@@ -389,33 +405,58 @@ func next(b []byte) (tag byte, val, rest []byte, ok bool) {
 	return tag, b[p : p+l], b[p+l:], true
 }
 
+// maxDepth bounds the nesting find descends into.
+const maxDepth = 16
+
 // find searches b depth-first for a TLV with the first tag of path, then
-// within it for the next, and so on, and returns the innermost value.
+// within it for the next, and so on, and returns the innermost value. It
+// also searches constructed TLVs for the path's first tag. Every TLV is
+// decoded once per nesting level: the positions of path still open at a
+// level are searched together (one bit each), not once per position, so
+// the work is linear in len(b) for at most maxDepth levels. A path longer
+// than eight tags finds nothing.
 func find(b []byte, path ...byte) ([]byte, bool) {
-	return findDepth(b, path, 0)
+	v, ok, _ := findSteps(b, path)
+	return v, ok
 }
 
-func findDepth(b []byte, path []byte, depth int) ([]byte, bool) {
-	if depth > 16 {
+// findSteps is find that also reports the offsets it decoded at.
+func findSteps(b []byte, path []byte) (val []byte, ok bool, steps int) {
+	if len(path) == 0 || len(path) > 8 {
+		return nil, false, 0
+	}
+	val, ok = findDepth(b, path, 1, 0, &steps)
+	return val, ok, steps
+}
+
+// findDepth searches b for the positions of path set in open.
+func findDepth(b []byte, path []byte, open uint8, depth int, steps *int) ([]byte, bool) {
+	if depth > maxDepth {
 		return nil, false
 	}
 	for len(b) > 0 {
+		*steps++
 		tag, val, rest, ok := next(b)
 		if !ok {
 			// Not BER at this offset (e.g. session parameters): skip.
 			b = b[1:]
 			continue
 		}
-		if tag == path[0] {
-			if len(path) == 1 {
+		var inner uint8
+		for i, want := range path {
+			if open&(1<<i) == 0 || tag != want {
+				continue
+			}
+			if i == len(path)-1 {
 				return val, true
 			}
-			if v, ok := findDepth(val, path[1:], depth+1); ok {
-				return v, true
-			}
+			inner |= 1 << (i + 1)
 		}
 		if tag&0x20 != 0 {
-			if v, ok := findDepth(val, path, depth+1); ok {
+			inner |= open
+		}
+		if inner != 0 {
+			if v, ok := findDepth(val, path, inner, depth+1, steps); ok {
 				return v, true
 			}
 		}

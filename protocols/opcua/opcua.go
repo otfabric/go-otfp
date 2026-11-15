@@ -20,6 +20,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,7 +84,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	}
 	defer s.Close() //nolint:errcheck
 
-	endpoint := fmt.Sprintf("opc.tcp://%s:%d", target.Host, target.Port)
+	endpoint := endpointURL(target)
 	resp, err := s.RoundTrip("hello", hello(endpoint), framer, maxFrame)
 	if err != nil {
 		if errors.Is(err, wire.ErrClosed) {
@@ -653,4 +655,10 @@ func join(v []string) string {
 		s.WriteString(x)
 	}
 	return s.String()
+}
+
+// endpointURL is the endpoint URL of target, opc.tcp://host:port, with an
+// IPv6 literal in brackets (OPC 10000-6 clause 6.2, RFC 3986).
+func endpointURL(t core.Target) string {
+	return "opc.tcp://" + net.JoinHostPort(t.Host, strconv.Itoa(t.Port))
 }

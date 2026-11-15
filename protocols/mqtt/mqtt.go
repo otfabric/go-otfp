@@ -114,11 +114,20 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	if clientID == "" {
 		clientID = ClientID()
 	}
+	// Every session is closed on return, also when a caller callback
+	// does not return normally; the DISCONNECT stays where it is.
+	var opened []*wire.Session
+	defer func() {
+		for _, s := range opened {
+			_ = s.Close()
+		}
+	}()
 	try := func(level byte) (attempt, error) {
 		c, err := Dial(ctx, proto, target, opts, 0)
 		if err != nil {
 			return attempt{}, err
 		}
+		opened = append(opened, c.S)
 		ack, err := c.Connect(level, clientID)
 		a := attempt{c: c, level: level, ack: ack, err: err}
 		if err != nil {

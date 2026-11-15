@@ -157,7 +157,13 @@ func newSession(ctx context.Context, p core.Protocol, addr string, conn net.Conn
 	// Unblock pending I/O when the scan is cancelled. Every operation also
 	// re-checks the context after arming its own deadline (see arm), since
 	// that deadline would otherwise override the one set here.
-	s.stop = context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
+	// The hook runs on its own goroutine, where a caller Dialer's conn
+	// whose SetDeadline does not return normally would end the process:
+	// recover it (the operations still fail on the context's error).
+	s.stop = context.AfterFunc(ctx, func() {
+		defer func() { _ = recover() }()
+		_ = conn.SetDeadline(time.Unix(1, 0))
+	})
 	return s
 }
 
@@ -233,8 +239,23 @@ func (s *Session) Exchanges() []core.Exchange {
 // Record adds an exchange to the trace, e.g. for a fingerprinter that does
 // its own I/O on Conn. The trace is bounded; see Exchanges.
 func (s *Session) Record(label string, probe, resp []byte) {
-	s.log.Debugf("otfp: %s %s %s: sent % x, received % x", s.proto.Slug(), s.addr, label, probe, resp)
+	s.debugf("otfp: %s %s %s: sent % x, received % x", s.proto.Slug(), s.addr, label, probe, resp)
 	s.keep(label, probe, resp)
+}
+
+// debugf passes one line to the caller's Logger. A Logger that does not
+// return normally closes the session first: the panic goes on to the
+// engine, which reports it as the probe's error, and the connection does
+// not outlive the probe, whether or not the fingerprinter defers Close.
+func (s *Session) debugf(format string, args ...any) {
+	returned := false
+	defer func() {
+		if !returned {
+			_ = s.Close()
+		}
+	}()
+	s.log.Debugf(format, args...)
+	returned = true
 }
 
 // keep adds an exchange to the trace when tracing and within the bounds.
@@ -429,7 +450,7 @@ func (s *Session) udpRoundTrip(probe []byte, max int, classify func([]byte) Verd
 	}
 	defer func() {
 		if strays > maxStraysLogged {
-			s.log.Debugf("otfp: %s %s: %d more datagrams discarded", s.proto.Slug(), s.addr, strays-maxStraysLogged)
+			s.debugf("otfp: %s %s: %d more datagrams discarded", s.proto.Slug(), s.addr, strays-maxStraysLogged)
 		}
 	}()
 	// ended is the outcome once MaxStrays datagrams were not the answer.

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/mbap"
@@ -144,6 +145,124 @@ func TestSweep(t *testing.T) {
 	code, out, _ := exec("detect", "127.0.0.1", "--ports", fmt.Sprintf("%d,%d", closed.Port, dev.Port), "--protocol", "modbus")
 	if code != exitOK || !strings.Contains(out, "Detected: Modbus TCP") || !strings.Contains(out, fmt.Sprintf("Closed:   %d", closed.Port)) {
 		t.Fatalf("exit %d\n%s", code, out)
+	}
+}
+
+// recordPauses replaces pause for the test: it records the gaps a sweep
+// asks for and returns at once (or calls fn, when given, for the result).
+func recordPauses(t *testing.T, fn func(context.Context, time.Duration) bool) *[]time.Duration {
+	t.Helper()
+	var gaps []time.Duration
+	prev := pause
+	pause = func(ctx context.Context, d time.Duration) bool {
+		gaps = append(gaps, d)
+		if fn != nil {
+			return fn(ctx, d)
+		}
+		return true
+	}
+	t.Cleanup(func() { pause = prev })
+	return &gaps
+}
+
+// A sweep keeps the probe gap of --safe and --min-interval from one port to
+// the next, with and without --parallel, and only after a port that ran.
+func TestSweepPacing(t *testing.T) {
+	ports := fmt.Sprintf("%d,%d,%d", testsrv.Closed(t).Port, testsrv.Closed(t).Port, testsrv.Closed(t).Port)
+	cases := []struct {
+		name  string
+		extra []string
+		want  []time.Duration
+	}{
+		{"safe", []string{"--safe"}, []time.Duration{250 * time.Millisecond, 250 * time.Millisecond}},
+		{"min-interval", []string{"--min-interval", "300ms"}, []time.Duration{300 * time.Millisecond, 300 * time.Millisecond}},
+		{"parallel", []string{"--min-interval", "40ms", "--parallel"}, []time.Duration{40 * time.Millisecond, 40 * time.Millisecond}},
+		{"unpaced", nil, nil},
+		{"no port ran", []string{"--network", "udp", "--safe"}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			gaps := recordPauses(t, nil)
+			args := append([]string{"detect", "127.0.0.1", "--ports", ports, "--protocol", "modbus", "-t", "1s"}, c.extra...)
+			code, out, errw := exec(args...)
+			if c.name == "no port ran" {
+				if code != exitInvalidInput {
+					t.Fatalf("exit %d\n%s%s", code, out, errw)
+				}
+			} else if code != exitTransport {
+				t.Fatalf("exit %d\n%s%s", code, out, errw)
+			}
+			if fmt.Sprint(*gaps) != fmt.Sprint(c.want) {
+				t.Fatalf("gaps %v, want %v", *gaps, c.want)
+			}
+		})
+	}
+}
+
+// fakeScanner probes every port except the skipped ones, which no selected
+// protocol uses; it counts the scans that probed.
+type fakeScanner struct {
+	skip  map[int]bool
+	ports []int
+}
+
+func (f *fakeScanner) Scan(ctx context.Context, t core.Target) (core.Report, error) {
+	if f.skip[t.Port] {
+		return core.Report{}, core.ErrNoFingerprinters
+	}
+	if ctx.Err() == nil {
+		f.ports = append(f.ports, t.Port)
+	}
+	return core.Report{Target: t}, nil
+}
+
+// The gap is kept only between ports that probe: a skipped port, between,
+// before or after them, adds no wait.
+func TestSweepPacingSkipsUnusedPorts(t *testing.T) {
+	var targets []core.Target
+	for p := 1; p <= 6; p++ {
+		targets = append(targets, core.Target{Host: "127.0.0.1", Port: p, Network: core.TCP, Timeout: time.Second})
+	}
+	gaps := recordPauses(t, nil)
+	eng := &fakeScanner{skip: map[int]bool{1: true, 3: true, 4: true, 6: true}}
+	scans, err := scanAll(context.Background(), eng, targets, true, 250*time.Millisecond)
+	if err != nil || len(scans) != 2 || fmt.Sprint(eng.ports) != "[2 5]" {
+		t.Fatalf("scans %d, probed %v, err %v", len(scans), eng.ports, err)
+	}
+	if fmt.Sprint(*gaps) != "[250ms]" {
+		t.Fatalf("gaps %v, want one between ports 2 and 5", *gaps)
+	}
+	// A single target no protocol runs on is an error, not a skip.
+	if _, err := scanAll(context.Background(), eng, targets[:1], false, 0); classify(err).exitCode() != exitInvalidInput {
+		t.Fatalf("single unused port: %v", err)
+	}
+}
+
+// An interrupt during the gap between two ports ends the sweep there.
+func TestSweepPacingInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	gaps := recordPauses(t, func(context.Context, time.Duration) bool {
+		cancel()
+		return false
+	})
+	ports := fmt.Sprintf("%d,%d", testsrv.Closed(t).Port, testsrv.Closed(t).Port)
+	var out, errw bytes.Buffer
+	code := run(ctx, []string{"detect", "127.0.0.1", "--ports", ports, "--protocol", "modbus", "--safe"}, &out, &errw)
+	if code != exitInterrupted || len(*gaps) != 1 {
+		t.Fatalf("exit %d, gaps %v\n%s%s", code, *gaps, out.String(), errw.String())
+	}
+}
+
+// pause waits the gap, and returns early when the context ends.
+func TestPause(t *testing.T) {
+	if !pause(context.Background(), time.Nanosecond) {
+		t.Fatal("pause did not complete")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if pause(ctx, time.Hour) {
+		t.Fatal("pause outlived its context")
 	}
 }
 

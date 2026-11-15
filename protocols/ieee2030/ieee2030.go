@@ -81,6 +81,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	if err != nil {
 		return core.NoMatch(proto), err
 	}
+	defer s.Close() //nolint:errcheck // also when a caller callback does not return normally
 	fl, err := readFlight(s, serverName)
 	trace := s.Exchanges()
 	_ = s.Close()
