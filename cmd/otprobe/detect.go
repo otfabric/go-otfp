@@ -199,8 +199,11 @@ func scanAll(ctx context.Context, engine scanner, targets []core.Target, sweep b
 			return nil, fail(kindInvalidInput, codeInvalidTarget, "%v", err)
 		}
 		scans = append(scans, scan{t, rep})
-		if ctx.Err() != nil {
-			break
+		select {
+		case <-ctx.Done():
+			// The caller reports the end of the context; the scans so far are kept.
+			return scans, nil
+		default:
 		}
 	}
 	return scans, nil
