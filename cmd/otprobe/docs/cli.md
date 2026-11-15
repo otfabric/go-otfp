@@ -696,7 +696,7 @@ Run `otprobe detect --help` for the full list:
 | `--parallel`, `--max-concurrency` | concurrent probes (off by default) |
 | `--min-interval` | delay between probes |
 | `--all` | run every probe, no early stop |
-| `--path` | WebSocket path OCPP tries first (station id) |
+| `--path` | WebSocket path OCPP tries first, starting with `/` (e.g. `/ocpp/<station id>`) |
 | `--canopen-node` | CANopen node (1-127) identified through a CiA 309-3 gateway (default: the gateway's default node) |
 | `--iec104-startdt` | with `--identify`: start data transfer at an IEC 104 station (STARTDT), acknowledge what it sends and stop again, to read its common address; takes data transfer and the acknowledged events from a connected control centre; not with `--safe` |
 | `-o, --format` | `text` (default), `table`, `json` |

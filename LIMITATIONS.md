@@ -75,8 +75,3 @@ only with the option that starts data transfer
 (`iec104.Fingerprinter.StartDT`, `otprobe --iec104-startdt`). That option
 takes data transfer, and the events it acknowledges, from a control centre
 connected to the station ([FINGERPRINTS.md](FINGERPRINTS.md)).
-
-**The `otprobe` of v0.8.0 is built on go-otfp v0.7.1.** The tool applies
-the IEC 104 default and the escaping of its output itself; the other
-library changes of v0.8.0 reach the tool with the release that builds it
-on v0.8.0 ([RELEASE.md](RELEASE.md)).
