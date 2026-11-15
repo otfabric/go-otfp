@@ -15,7 +15,7 @@ import (
 const (
 	exitOK           = 0   // ok: a protocol was identified at high confidence
 	exitFindings     = 1   // findings: the scan completed and no protocol matched
-	exitUsage        = 2   // usage: unknown command or flag, wrong number of arguments
+	exitUsage        = 2   // usage: unknown command or flag, wrong number of arguments, a missing --yes
 	exitInvalidInput = 3   // invalid input: a value that does not make sense; nothing was sent
 	exitTransport    = 4   // transport: refused, unreachable, reset, TLS handshake failed
 	exitTimeout      = 5   // timeout: nothing answered in time, or --deadline cut the scan
@@ -39,15 +39,17 @@ const (
 
 // Stable machine codes of the JSON error object.
 const (
-	codeInvalidInput     = "invalid_input"
-	codeInvalidTarget    = "invalid_target"
-	codeInvalidProtocol  = "invalid_protocol"
-	codeInvalidFormat    = "invalid_format"
-	codeInvalidFlags     = "invalid_flag_combination"
-	codeNoFingerprinters = "no_fingerprinters"
-	codeOutputFailed     = "output_write_failed"
-	codeContextCanceled  = "context_canceled"
-	codeInternal         = "internal_unexpected"
+	codeInvalidInput = "invalid_input"
+	// A step that changes a station's state was not confirmed with --yes.
+	codeConfirmationRequired = "confirmation_required"
+	codeInvalidTarget        = "invalid_target"
+	codeInvalidProtocol      = "invalid_protocol"
+	codeInvalidFormat        = "invalid_format"
+	codeInvalidFlags         = "invalid_flag_combination"
+	codeNoFingerprinters     = "no_fingerprinters"
+	codeOutputFailed         = "output_write_failed"
+	codeContextCanceled      = "context_canceled"
+	codeInternal             = "internal_unexpected"
 )
 
 // cliError is a fatal error of a command.
