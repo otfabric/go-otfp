@@ -122,7 +122,7 @@ family from the order number.
 ### OPC UA (`opcua`, TCP, passive)
 
 Performs the UACP hello handshake: a HEL carrying the endpoint URL
-`opc.tcp://host:port`. An ACK is **certain**; an ERR (for example
+`opc.tcp://host:port` (an IPv6 literal in brackets, `opc.tcp://[::1]:4840`). An ACK is **certain**; an ERR (for example
 `BadTcpEndpointUrlInvalid` when the URL does not match the server's endpoint)
 is also certain — no other protocol frames a `HELF`/`ACKF`/`ERRF` message.
 Identify opens an anonymous secure channel with security policy None and
@@ -178,7 +178,12 @@ the configured candidate outstation addresses (10, 1, 1024, 0, 3, 4). A
 LINK_STATUS reply with the 0x0564 start octets, a valid header CRC and the
 secondary direction is **certain** and reveals the outstation and master
 addresses. Broadcast destinations are never used (outstations do not answer
-them). Identify reads the device attributes (group 0, variation 254).
+them). Identify reads the device attributes (group 0, variation 254) with an
+unconfirmed READ, sent from the configured master address to the address
+the LINK_STATUS came from. A LINK_STATUS from a reserved address
+(0xFFF0–0xFFFF, the self address 0xFFFC included) is still DNP3, but no READ
+is sent to it: the result is not identified, and an evidence line says that
+identify was skipped.
 
 ### IEC 60870-5-104 (`iec104`, TCP, passive)
 
@@ -301,7 +306,10 @@ is 6, the version 0x10, the total length equals the datagram, a 54-octet
 DEVICE_INFO DIB is followed by a SUPP_SVC_FAMILIES DIB, and the DIBs fill
 the body exactly. It is **certain** when the core family is listed,
 **high** otherwise. An echo of the request is a DESCRIPTION_REQUEST and never
-matches; malformed KNX-shaped frames are hints. The response carries the
+matches; malformed KNX-shaped frames are hints. Over UDP only a
+DESCRIPTION_RESPONSE ends the round trip: a datagram of another KNXnet/IP
+service, or the request's echo, is set aside as a foreign datagram and
+judged at the end of the window when no DESCRIPTION_RESPONSE arrived. The response carries the
 identity, so identify mode sends nothing more: friendly name (ISO 8859-1,
 NUL-trimmed, control characters removed), KNX medium, individual address,
 project/installation ID, serial number and manufacturer, routing multicast

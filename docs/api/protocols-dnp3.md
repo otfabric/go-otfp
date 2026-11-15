@@ -10,7 +10,7 @@ Package dnp3 fingerprints DNP3 over TCP (IEEE 1815).
 
 Detection sends data-link REQUEST\_LINK\_STATUS frames, which carry no application data and are answered in any state: first to the self address 0xFFFC, then, in the same write, to the configured candidate outstation addresses. A LINK\_STATUS reply with the 0x0564 start octets, a valid header CRC and the secondary direction proves DNP3 and reveals the outstation and master addresses. Broadcast addresses are useless here: outstations never answer them.
 
-In identify mode the device attributes (group 0, variation 254, all attributes) are read with an unconfirmed READ.
+In identify mode the device attributes (group 0, variation 254, all attributes) are read with an unconfirmed READ, sent from the configured master address to the address the LINK\_STATUS came from. A LINK\_STATUS from a reserved address (0xFFF0-0xFFFF) is still DNP3, but no READ is sent to it.
 
 ## Variables
 

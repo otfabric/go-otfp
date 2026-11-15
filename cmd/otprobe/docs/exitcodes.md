@@ -17,7 +17,7 @@ parse.
 | 4 | Transport: nothing answered and the target (or the `--proxy`) refused, could not be reached, reset the connection, or failed the TLS handshake |
 | 5 | Timeout: nothing answered in time, or `--deadline` ended the scan before anything matched |
 | 7 | Partial: a protocol matched, but below the high-confidence threshold (a valid result was written) |
-| 10 | Internal (`output`, `internal`): the result could not be written, or a fingerprinter failed unexpectedly |
+| 10 | Internal (`output`, `internal`): the result could not be written, or a fingerprinter (or a progress or debug callback of the engine) failed unexpectedly |
 | 130 | Interrupted (`interrupted`): SIGINT or SIGTERM before a result was written |
 
 **Precedence.** A scan's outcome is the best across all scanned ports and

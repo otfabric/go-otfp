@@ -273,6 +273,11 @@ func answers(dg []byte) wire.Verdict {
 		return wire.Foreign
 	case h>>8 == famRouting:
 		return wire.Discard
+	case h != svcDescRes:
+		// Another service, or our own request coming back: kept, and
+		// judged at the end of the window only when no
+		// DESCRIPTION_RESPONSE arrived.
+		return wire.Foreign
 	}
 	return wire.Answer
 }

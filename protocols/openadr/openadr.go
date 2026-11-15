@@ -74,6 +74,14 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	// is "could not decide" rather than "not OpenADR".
 	var dialErr error
 	connected := false
+	// Every session is closed on return, also when a caller callback
+	// does not return normally.
+	var opened []*wire.Session
+	defer func() {
+		for _, s := range opened {
+			_ = s.Close()
+		}
+	}()
 	dial := func() (*wire.Session, bool) {
 		s, err := wire.Dial(ctx, proto, target, opts)
 		if err != nil {
@@ -83,6 +91,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 			return nil, false
 		}
 		connected = true
+		opened = append(opened, s)
 		return s, true
 	}
 

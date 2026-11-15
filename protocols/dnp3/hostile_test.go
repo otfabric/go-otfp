@@ -141,7 +141,9 @@ func TestIdentifyDripBounded(t *testing.T) {
 				return
 			}
 			if h.Ctrl&0x0F == fcRequestLinkStatus {
-				if _, err := c.Write(Frame(fcLinkStatus, h.Src, h.Dst, nil)); err != nil {
+				// From the outstation's own address: identify sends no
+				// READ to the self address 0xFFFC the burst starts with.
+				if _, err := c.Write(Frame(fcLinkStatus, h.Src, 1024, nil)); err != nil {
 					return
 				}
 				continue
@@ -194,6 +196,51 @@ func TestEchoIsNotDNP3(t *testing.T) {
 		r, err := New().Detect(context.Background(), target, core.Options{Mode: mode})
 		if err != nil || r.Matched {
 			t.Fatalf("%s: %v %v", mode, r, err)
+		}
+	}
+}
+
+// A LINK_STATUS from a reserved address (0xFFF0-0xFFFF, which includes the
+// broadcast addresses) is DNP3, but identify sends no READ to it; from an
+// ordinary address the READ goes there, always from the configured master
+// address, whatever master the reply named (here 7).
+func TestIdentifyReadAddresses(t *testing.T) {
+	for _, tc := range []struct {
+		src, master uint16
+		read        bool
+	}{
+		{0xFFF0, 0, false}, {0xFFFC, 0, false}, {0xFFFD, 0, false}, {0xFFFE, 0, false}, {0xFFFF, 0, false},
+		{0x1234, 0, true}, {10, 0, true}, {0xFFEF, 5, true},
+	} {
+		rec := &chaos.Recorder{}
+		target := testsrv.TCP(t, rec.Wrap(testsrv.Script(Frame(fcLinkStatus, 7, tc.src, nil))))
+		target.Timeout = 50 * time.Millisecond
+		r, err := NewWithConfig(Config{Master: tc.master}).Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify})
+		if err != nil || !r.Matched {
+			t.Fatalf("src 0x%04X: %v %v", tc.src, r, err)
+		}
+		master := tc.master
+		if master == 0 {
+			master = 1
+		}
+		var reads int
+		for _, h := range frames(t, rec) {
+			if h.Src != master {
+				t.Errorf("src 0x%04X: frame sent from %d, want %d", tc.src, h.Src, master)
+			}
+			if h.Ctrl&0x0F != fcUnconfirmedData {
+				continue
+			}
+			reads++
+			if h.Dst != tc.src {
+				t.Errorf("src 0x%04X: READ sent to 0x%04X", tc.src, h.Dst)
+			}
+		}
+		if want := map[bool]int{false: 0, true: 1}[tc.read]; reads != want {
+			t.Errorf("src 0x%04X: %d READs, want %d", tc.src, reads, want)
+		}
+		if !tc.read && !strings.Contains(strings.Join(r.Evidence, "\n"), "identify skipped") {
+			t.Errorf("src 0x%04X: evidence %q", tc.src, r.Evidence)
 		}
 	}
 }

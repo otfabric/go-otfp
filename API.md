@@ -206,6 +206,8 @@ func (Report) Matches() []Result
 
 `Scan` returns an error only for an invalid target or when no fingerprinter
 applies (`ErrNoFingerprinters`); per-protocol failures are in `Results`.
+With `Parallel` and `EarlyStop`, the probes the early stop cancelled are not
+in `Results`, whatever they returned.
 
 An engine keeps no state between scans and has nothing to close. The zero
 `Engine`, a nil `*Engine` and an engine over a nil registry have no
@@ -250,7 +252,9 @@ context. A slow callback delays its own probe only. A callback, or a
 `Logger` method, that does not return normally is recovered by the engine,
 in sequential and in parallel scans, and becomes the error of that probe's
 result (a `*DetectError` of operation `observer` or `logger`); the scan goes
-on. When `OnStart` does not return normally the fingerprinter is not run.
+on. A `Logger` that does not return normally also closes that probe's
+connection. When `OnStart` does not return normally the fingerprinter is not
+run.
 
 Typed errors: `DetectError`, `TimeoutError`, `ConnectionError`
 (`Refused()`), `InvalidResponseError`, `ProtocolNotFoundError`, and the

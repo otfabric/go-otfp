@@ -97,10 +97,10 @@ docs/exitcodes.md.`,
 	fl.StringSliceVar(&f.protocols, "protocol", nil, "probe only these protocols (repeatable or comma-separated)")
 	fl.StringSliceVar(&f.exclude, "exclude", nil, "skip these protocols")
 	fl.BoolVarP(&f.identify, "identify", "i", false, "read the device identity (vendor, model, version, serial) where supported")
-	fl.BoolVar(&f.safe, "safe", false, "OT-safe scan: passive probes only, likely protocols only, 250ms between probes; refuses --iec104-startdt")
+	fl.BoolVar(&f.safe, "safe", false, "OT-safe scan: passive probes only, likely protocols only, 250ms between probes and between the ports of a sweep; refuses --iec104-startdt (--min-interval, --parallel and --all given with it take precedence)")
 	fl.BoolVar(&f.parallel, "parallel", false, "probe protocols concurrently (many field devices accept one connection: off by default)")
 	fl.IntVar(&f.maxConc, "max-concurrency", 0, "limit concurrent probes with --parallel (0 = unbounded)")
-	fl.DurationVar(&f.minGap, "min-interval", 0, "minimum delay between probes")
+	fl.DurationVar(&f.minGap, "min-interval", 0, "minimum delay between probes, and between the ports of a sweep")
 	fl.BoolVar(&f.allProbes, "all", false, "run every applicable probe instead of stopping at the first confident match")
 	formatFlag(cmd, &f.format, detectFormats...)
 	fl.StringVar(&f.path, "path", "", "WebSocket path OCPP tries first, starting with / (e.g. /ocpp/<station id>)")
@@ -148,22 +148,9 @@ func runDetect(parent context.Context, f detectFlags, arg string, stdout, stderr
 	}
 
 	engine := core.NewEngine(registry(f), cfg)
-	var scans []scan
-	for _, t := range targets {
-		rep, err := engine.Scan(ctx, t)
-		if errors.Is(err, core.ErrNoFingerprinters) {
-			if sweep {
-				continue // no selected protocol uses this port
-			}
-			return fail(kindInvalidInput, codeNoFingerprinters, "no selected protocol runs over %s", t.Network)
-		}
-		if err != nil {
-			return fail(kindInvalidInput, codeInvalidTarget, "%v", err)
-		}
-		scans = append(scans, scan{t, rep})
-		if ctx.Err() != nil {
-			break
-		}
+	scans, err := scanAll(ctx, engine, targets, sweep, cfg.MinInterval)
+	if err != nil {
+		return err
 	}
 	if parent.Err() != nil {
 		return fail(kindInterrupted, codeContextCanceled, "interrupted")
@@ -184,6 +171,65 @@ func runDetect(parent context.Context, f detectFlags, arg string, stdout, stderr
 		return &exitStatus{code}
 	}
 	return nil
+}
+
+// scanner is the part of *core.Engine that scanAll uses.
+type scanner interface {
+	Scan(ctx context.Context, target core.Target) (core.Report, error)
+}
+
+// scanAll scans the targets one after the other. A sweep skips a port no
+// selected protocol uses. The engine keeps gap (its MinInterval) between the
+// probes of one scan; scanAll keeps it from one scan that probed to the
+// next, and waits for no skipped port.
+func scanAll(ctx context.Context, engine scanner, targets []core.Target, sweep bool, gap time.Duration) ([]scan, error) {
+	var scans []scan
+	for _, t := range targets {
+		if len(scans) > 0 && gap > 0 && probes(engine, t) && !pause(ctx, gap) {
+			break
+		}
+		rep, err := engine.Scan(ctx, t)
+		if errors.Is(err, core.ErrNoFingerprinters) {
+			if sweep {
+				continue // no selected protocol uses this port
+			}
+			return nil, fail(kindInvalidInput, codeNoFingerprinters, "no selected protocol runs over %s", t.Network)
+		}
+		if err != nil {
+			return nil, fail(kindInvalidInput, codeInvalidTarget, "%v", err)
+		}
+		scans = append(scans, scan{t, rep})
+		select {
+		case <-ctx.Done():
+			// The caller reports the end of the context; the scans so far are kept.
+			return scans, nil
+		default:
+		}
+	}
+	return scans, nil
+}
+
+// probes reports whether a scan of t would run a fingerprinter. A scan under
+// a context that has already ended plans the target and starts nothing, so
+// nothing is sent.
+func probes(engine scanner, t core.Target) bool {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := engine.Scan(ctx, t)
+	return !errors.Is(err, core.ErrNoFingerprinters)
+}
+
+// pause waits d, or until ctx ends, and reports whether d passed. Tests
+// replace it to record the gaps of a sweep without waiting.
+var pause = func(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // parseTargets resolves the argument and flags into one target, or into one
@@ -426,9 +472,9 @@ func outcome(scans []scan) int {
 
 // resultKind classifies the error of one probe result by the library's
 // typed errors: a dial or I/O failure (refused, unreachable, reset, TLS
-// handshake) is transport, a deadline is timeout, and a fingerprinter that
-// failed by itself (the engine reports a panic as a DetectError of op
-// "detect") is internal. Anything else is left to the other results.
+// handshake) is transport, a deadline is timeout, and a fingerprinter or a
+// callback that failed by itself (the engine reports a panic as a
+// DetectError of op "detect", "observer" or "logger") is internal. Anything else is left to the other results.
 func resultKind(err error) kind {
 	if te, ok := errors.AsType[*core.TimeoutError](err); ok && te != nil {
 		return kindTimeout
@@ -437,7 +483,8 @@ func resultKind(err error) kind {
 		return kindTransport
 	}
 	if de, ok := errors.AsType[*core.DetectError](err); ok && de != nil {
-		if de.Op == "detect" {
+		switch de.Op {
+		case "detect", "observer", "logger":
 			return kindInternal
 		}
 		return kindTransport

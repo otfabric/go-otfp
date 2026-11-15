@@ -11,7 +11,10 @@
 // outstations never answer them.
 //
 // In identify mode the device attributes (group 0, variation 254, all
-// attributes) are read with an unconfirmed READ.
+// attributes) are read with an unconfirmed READ, sent from the configured
+// master address to the address the LINK_STATUS came from. A LINK_STATUS
+// from a reserved address (0xFFF0-0xFFFF) is still DNP3, but no READ is
+// sent to it.
 package dnp3
 
 import (
@@ -47,7 +50,11 @@ const (
 	fcNotSupported      = 0x0F // secondary
 
 	selfAddress = 0xFFFC
-	maxFrames   = 8
+	// reservedAddresses starts the range 0xFFF0-0xFFFF that IEEE 1815
+	// reserves for broadcast and special addresses: never a destination
+	// of the identify READ.
+	reservedAddresses = 0xFFF0
+	maxFrames         = 8
 
 	// identifyBudget bounds the whole identify phase, in target timeouts:
 	// a complete attribute response arrives in one round trip, so a peer
@@ -149,7 +156,14 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		return b.Result("dnp3.link", "no DNP3 link status", s), nil
 	}
 	if opts.Mode == core.ModeIdentify {
-		f.identify(b, s, status.Src, status.Dst)
+		if status.Src >= reservedAddresses {
+			// The READ goes to the address the outstation answered
+			// from; a reserved (broadcast or special) address is not an
+			// outstation's own.
+			b.Evidence(fmt.Sprintf("identify skipped: link status from reserved address 0x%04X", status.Src))
+		} else {
+			f.identify(b, s, status.Src)
+		}
 	}
 	return b.Result("dnp3.link", fmt.Sprintf("DNP3 outstation %d", status.Src), s), nil
 }
@@ -188,7 +202,9 @@ func (f *Fingerprinter) judge(b *fpx.Builder, frame []byte) (Header, bool) {
 // identify reads all device attributes. The whole phase is bounded by
 // identifyBudget target timeouts (and the scan's context): what arrived
 // before the budget ran out is kept.
-func (f *Fingerprinter) identify(b *fpx.Builder, s *wire.Session, outstation, master uint16) {
+// The READ is sent from the configured master address, whatever master the
+// link status named.
+func (f *Fingerprinter) identify(b *fpx.Builder, s *wire.Session, outstation uint16) {
 	budget := identifyBudget * s.Timeout()
 	end := time.Now().Add(budget)
 	until := func() time.Time {
@@ -200,7 +216,7 @@ func (f *Fingerprinter) identify(b *fpx.Builder, s *wire.Session, outstation, ma
 	// Transport FIR|FIN seq 0; application FIR|FIN seq 0, READ, g0v254
 	// qualifier 0x06 (all objects).
 	user := []byte{0xC0, 0xC0, 0x01, 0x00, 0xFE, 0x06}
-	req := Frame(ctrlDIR|ctrlPRM|fcUnconfirmedData, outstation, master, user)
+	req := Frame(ctrlDIR|ctrlPRM|fcUnconfirmedData, outstation, f.master, user)
 	var reply []byte
 	err := s.Send(req)
 	if err == nil {

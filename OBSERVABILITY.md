@@ -14,7 +14,7 @@ bytes they send and receive. Of the datagrams a UDP round trip discards, the
 first four are logged with their bytes and the rest as one count. A `Logger`
 is called synchronously, from several goroutines with `Parallel`; a method
 that does not return normally is recovered and becomes the error of that
-probe's result.
+probe's result, and that probe's connection is closed.
 
 ```go
 cfg := core.DefaultEngineConfig()

@@ -53,6 +53,8 @@ func TestOutcome(t *testing.T) {
 	reset := core.ErrorResult(p, &core.DetectError{Protocol: p, Op: "read", Err: errors.New("connection reset by peer")})
 	panicked := core.ErrorResult(p, &core.DetectError{Protocol: p, Op: "detect", Err: errors.New("fingerprinter panicked: boom")})
 	deadline := core.ErrorResult(p, fmt.Errorf("modbus: %w", context.DeadlineExceeded))
+	observerFailed := core.ErrorResult(p, &core.DetectError{Protocol: p, Op: "observer", Err: errors.New("Observer.OnResult did not return normally: boom")})
+	loggerFailed := core.ErrorResult(p, &core.DetectError{Protocol: p, Op: "logger", Err: errors.New("Logger.Debugf did not return normally: boom")})
 
 	cases := []struct {
 		name    string
@@ -70,6 +72,8 @@ func TestOutcome(t *testing.T) {
 		{"context deadline", []core.Result{deadline}, exitTimeout},
 		{"panic", []core.Result{panicked}, exitInternal},
 		{"transport beats panic", []core.Result{panicked, refused}, exitTransport},
+		{"observer failed", []core.Result{observerFailed}, exitInternal},
+		{"logger failed", []core.Result{loggerFailed}, exitInternal},
 		{"nothing probed", nil, exitFindings},
 	}
 	for _, c := range cases {
@@ -107,5 +111,21 @@ func TestOutputFailed(t *testing.T) {
 		if code := run(context.Background(), args, brokenWriter{}, &errw); code != exitInternal || !strings.Contains(errw.String(), "write output") {
 			t.Errorf("%v: exit %d, stderr %q", args, code, errw.String())
 		}
+	}
+}
+
+// The text form of an error is terminal text: an unknown flag that pflag
+// repeats as given reaches stderr with its control characters escaped.
+func TestErrorTextIsTerminalText(t *testing.T) {
+	code, out, errw := exec("detect", "x:1", "--bo\x1b]0;title\x07gus\u202e")
+	if code != exitUsage || out != "" {
+		t.Fatalf("exit %d, stdout %q", code, out)
+	}
+	if strings.ContainsAny(errw, "\x1b\x07\u202e") || !strings.Contains(errw, `--bo\x1b]0;title\agus\u202e`) {
+		t.Fatalf("stderr %q", errw)
+	}
+	var w bytes.Buffer
+	if code := render(fail(kindInvalidInput, codeInvalidInput, "bad\nvalue"), false, &w, &w); code != exitInvalidInput || w.String() != "error: bad\\nvalue\n" {
+		t.Fatalf("render: exit %d, %q", code, w.String())
 	}
 }

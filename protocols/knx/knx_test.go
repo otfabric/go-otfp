@@ -288,9 +288,35 @@ func TestNetworkMismatch(t *testing.T) {
 
 func TestEchoDoesNotMatch(t *testing.T) {
 	target := testsrv.UDP(t, func(req []byte) ([]byte, bool) { return req, false })
+	target.Timeout = 200 * time.Millisecond // the echo is judged at the end of the window
 	r, err := New().Detect(context.Background(), target, core.Options{})
 	if err != nil || r.Matched || r.Confidence != 0 || !strings.Contains(strings.Join(r.Evidence, ";"), "echoed") {
 		t.Fatalf("%+v %v", r, err)
+	}
+}
+
+// A frame of another KNXnet/IP service (here a SEARCH_RESPONSE) ahead of
+// the DESCRIPTION_RESPONSE does not end the round trip: the response after
+// it is taken.
+func TestOtherServiceIsNotTheAnswer(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close() //nolint:errcheck
+	go func() {
+		buf := make([]byte, 1500)
+		_, from, err := pc.ReadFrom(buf)
+		if err != nil {
+			return
+		}
+		_, _ = pc.WriteTo(frame(0x0202, []byte{0x08, 0x01, 127, 0, 0, 1, 0x0e, 0x57}), from)
+		_, _ = pc.WriteTo(unhex(knxdResp), from)
+	}()
+	ua := pc.LocalAddr().(*net.UDPAddr)
+	r := identify(t, New(), core.Target{Host: "127.0.0.1", Port: ua.Port, Network: core.UDP, Timeout: 2 * time.Second})
+	if !r.Matched {
+		t.Fatalf("%+v", r)
 	}
 }
 
@@ -415,7 +441,7 @@ func TestHelpers(t *testing.T) {
 	if framer(unhex("06 20 02 04 00 10")) != -1 || framer(unhex("06 10 02 04 ff ff")) != -1 || framer(unhex("06 10")) != 0 {
 		t.Fatal("framer")
 	}
-	if answers([]byte("x")) != wire.Foreign || answers(frame(0x0530)) != wire.Discard || answers(unhex(knxdResp)) != wire.Answer || answers(frame(0x0202)) != wire.Answer {
+	if answers([]byte("x")) != wire.Foreign || answers(frame(0x0530)) != wire.Discard || answers(unhex(knxdResp)) != wire.Answer || answers(frame(0x0202)) != wire.Foreign || answers(frame(svcDescReq)) != wire.Foreign {
 		t.Fatal("answers")
 	}
 	// Short optional DIBs are tolerated but yield nothing.

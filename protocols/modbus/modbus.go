@@ -95,6 +95,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	}
 	resp, s, err := f.exchange(ctx, target, opts, "fc43", deviceIDRequest(f.unit, code, objVendorName))
 	if s != nil {
+		defer s.Close() //nolint:errcheck
 		trace = append(trace, s.Exchanges()...)
 	}
 	if err == nil {
@@ -134,6 +135,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	b.Evidence("no answer to Read Device Identification, trying FC 03")
 	resp2, s2, err2 := f.exchange(ctx, target, opts, "fc03", mbap.ReadRegisters(probeTID+1, f.unit, mbap.FCReadHoldingRegisters, 0, 1))
 	if s2 != nil {
+		defer s2.Close() //nolint:errcheck
 		trace = append(trace, s2.Exchanges()...)
 		_ = s2.Close()
 	}
@@ -152,7 +154,16 @@ func (f *Fingerprinter) exchange(ctx context.Context, target core.Target, opts c
 	if err != nil {
 		return nil, nil, err
 	}
+	// The caller closes s once it is returned; until then, close it on
+	// a callback that does not return normally.
+	returned := false
+	defer func() {
+		if !returned {
+			_ = s.Close()
+		}
+	}()
 	resp, err := s.RoundTrip(label, req, mbap.Framer, mbap.MaxADU)
+	returned = true
 	return resp, s, err
 }
 

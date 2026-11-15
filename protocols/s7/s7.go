@@ -105,6 +105,13 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 	}
 
 	var s *wire.Session
+	// s, the session open at return, is closed on every path, also when
+	// a caller callback does not return normally.
+	defer func() {
+		if s != nil {
+			_ = s.Close()
+		}
+	}()
 	var tsap uint16
 	refused := false
 	for _, called := range f.called {
@@ -152,7 +159,6 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		}
 		return finish("no S7 TSAP accepted", nil), nil
 	}
-	defer s.Close() //nolint:errcheck
 	b.Score(core.ConfidenceLow, fmt.Sprintf("COTP connection confirmed for TSAP 0x%04x", tsap))
 	b.Meta("tsap", fmt.Sprintf("0x%04x", tsap))
 
