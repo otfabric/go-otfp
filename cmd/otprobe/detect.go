@@ -18,6 +18,7 @@ import (
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/tlsx"
 	"github.com/otfabric/go-otfp/protocols/canopen"
+	"github.com/otfabric/go-otfp/protocols/iec104"
 	"github.com/spf13/cobra"
 )
 
@@ -102,7 +103,7 @@ docs/exitcodes.md.`,
 	fl.DurationVar(&f.minGap, "min-interval", 0, "minimum delay between probes")
 	fl.BoolVar(&f.allProbes, "all", false, "run every applicable probe instead of stopping at the first confident match")
 	formatFlag(cmd, &f.format, detectFormats...)
-	fl.StringVar(&f.path, "path", "", "WebSocket path OCPP tries first (e.g. the station id)")
+	fl.StringVar(&f.path, "path", "", "WebSocket path OCPP tries first, starting with / (e.g. /ocpp/<station id>)")
 	fl.IntVar(&f.canopenNode, "canopen-node", 0, "CANopen node (1-127) to identify through a CiA 309-3 gateway (default: the gateway's default node)")
 	fl.BoolVar(&f.iec104StartDT, "iec104-startdt", false, "with --identify: start data transfer at an IEC 104 station (STARTDT), acknowledge what it sends and stop again, to read its common address; takes data transfer and the acknowledged events from a connected control centre (not with --safe)")
 	fl.BoolVar(&f.trace, "trace", false, "include the raw probe and response bytes")
@@ -301,8 +302,8 @@ func selectedProtocols(f detectFlags) (map[core.Protocol]bool, error) {
 }
 
 // registry is the default registry, with the CANopen fingerprinter set to
-// --canopen-node when given, and the IEC 104 fingerprinter kept from
-// starting data transfer unless --iec104-startdt is given.
+// --canopen-node when given, and the IEC 104 fingerprinter set to start
+// data transfer in identify mode with --iec104-startdt.
 func registry(f detectFlags) *core.Registry {
 	fps := otfp.Fingerprinters()
 	for i, fp := range fps {
@@ -312,42 +313,12 @@ func registry(f detectFlags) *core.Registry {
 				fps[i] = canopen.NewWithConfig(canopen.Config{Node: f.canopenNode})
 			}
 		case core.ProtocolIEC104:
-			if !f.iec104StartDT {
-				fps[i] = iec104WithoutStartDT{fp}
+			if f.iec104StartDT {
+				fps[i] = &iec104.Fingerprinter{StartDT: true}
 			}
 		}
 	}
 	return core.NewRegistry().MustRegister(fps...)
-}
-
-// iec104WithoutStartDT is the IEC 104 fingerprinter without the exchange
-// that changes the station: in identify mode it runs the detection
-// exchange (TESTFR act/con) and says that data transfer was not started.
-//
-// The go-otfp release this tool is built on (v0.7.1) starts data transfer
-// whenever it identifies, so the tool keeps identify mode from reaching it.
-// From go-otfp v0.8.0 that is the library's default and STARTDT is the
-// option iec104.Fingerprinter.StartDT: when the tool is built on it, this
-// type goes and --iec104-startdt sets that option
-// (TestIEC104StartDTFlag fails until it does).
-type iec104WithoutStartDT struct{ core.Fingerprinter }
-
-// Info describes what the tool sends: the library's description, as far as
-// it is about detection, and the flag for the rest.
-func (f iec104WithoutStartDT) Info() core.Info {
-	info := f.Fingerprinter.Info()
-	info.Description = "APCI TESTFR act/con; with --iec104-startdt, STARTDT/STOPDT and the spontaneous ASDUs in between in identify mode"
-	return info
-}
-
-func (f iec104WithoutStartDT) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
-	identify := opts.Mode == core.ModeIdentify
-	opts.Mode = core.ModeDetect
-	r, err := f.Fingerprinter.Detect(ctx, target, opts)
-	if identify && err == nil && r.Matched {
-		r = r.WithEvidence("data transfer not started: the common address and the ASDU types are read only with STARTDT, which is opt-in")
-	}
-	return r, err
 }
 
 func engineConfig(f detectFlags, sweep bool, stderr io.Writer) (core.EngineConfig, error) {

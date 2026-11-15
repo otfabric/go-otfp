@@ -3,6 +3,22 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## v0.8.1
+
+**Date:** 2026-11-15
+**Previous release:** v0.8.0
+
+The go-otfp library is unchanged from v0.8.0. `otprobe` is built on go-otfp v0.8.0 (was v0.7.1).
+
+### Changed
+
+- `otprobe` has the library changes of v0.8.0 (see v0.8.0 below). For the tool this means:
+  - `--path` follows the `Target.Validate` rule: a path that does not start with `/`, or holds a space or a control character, is invalid input (exit 3). The help and docs/cli.md say so.
+  - The IEC 104 probe is the library's: TESTFR only by default and always with `--safe`; `--iec104-startdt` turns the STARTDT exchange on, as in v0.8.0, and is refused with `--safe`.
+- LIMITATIONS.md no longer says that `otprobe` is built on v0.7.1.
+
+---
+
 ## v0.8.0
 
 **Date:** 2026-11-15
