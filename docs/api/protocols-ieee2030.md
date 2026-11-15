@@ -36,7 +36,7 @@ New returns an IEEE 2030.5 fingerprinter.
 func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error)
 ```
 
-Detect probes target.
+Detect probes target. A target whose host cannot be sent in the Host header of the /dcap request (httpx.CheckRequest) is not connected to: Detect returns a \*core.DetectError of operation "request".
 
 #### func (Fingerprinter) Info
 

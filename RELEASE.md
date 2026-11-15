@@ -3,6 +3,54 @@
 > **Stability:** `v0.x` is pre-1.0. Public APIs may change between minor
 > tags; pin versions and read these notes before upgrading.
 
+## v0.8.0
+
+**Date:** 2026-11-15
+**Previous release:** v0.7.1
+
+Library changes are those of go-otfp v0.8.0. `otprobe` v0.8.0 is still built on go-otfp v0.7.1, as a nested module that requires a released library: it has the changes marked `otprobe` below, and the other library changes with the release that builds it on v0.8.0.
+
+### Breaking
+
+- **IEC 60870-5-104: identify mode no longer starts data transfer.** `iec104.New()` sends TESTFR act and nothing else, in identify mode as in detect mode, at every intrusiveness level: no STARTDT, no S-format acknowledgement, no STOPDT. The result of identify mode is the result of detection with one evidence line that says so; `Identity` is nil (no `commonAddress`, no `asduTypes`) and the signature is `testfr=con` (was `testfr=con;startdt=con`). Before, identify mode started data transfer and acknowledged what the station sent, also under `SafeEngineConfig`: on a station with a control centre connected, data transfer moved to the probe's connection and the acknowledged events did not reach the control centre.
+  - To get the previous exchange, opt in and allow read-only probes: register `&iec104.Fingerprinter{StartDT: true}` in place of `iec104.New()`, with `MaxIntrusiveness: core.ReadOnly` (the value of `DefaultEngineConfig`). With `otprobe`: `otprobe detect <target> --identify --iec104-startdt`.
+  - With `StartDT` set and a scan that allows passive probes only (`SafeEngineConfig`, the zero `Options`), `Detect` returns a `*core.DetectError` of operation `startdt` and opens no connection, in detect mode too. `otprobe` refuses `--iec104-startdt` with `--safe`, and without `--identify`, with exit code 3.
+  - `otprobe detect --identify` on an IEC 104 station prints `testfr=con` and no common address unless `--iec104-startdt` is given.
+
+### Added
+
+- `iec104.Fingerprinter.StartDT` (see above) and `iec104.MaxAPDUs` (256), the most APDUs its listening window reads.
+- `otprobe detect --iec104-startdt`.
+- `(*core.TimeoutError).Is`: every timeout of a probe matches `context.DeadlineExceeded` with `errors.Is`, whether the scan's context or the target's `Timeout` ended the operation (it matched only for the context's deadline).
+- SECURITY.md: a table of what one probe reads and keeps per fingerprinter, and of the state each probe opens at the device. TESTING.md: the lifecycle contract matrix (L1 to L16). API.md: an ownership table.
+- Tests: a limit test with an allocation budget per fingerprinter (`TestLimits`, `internal/fuzzkit.Limits`); a fuzz target for the HTTP response framer; one leak helper that compares goroutines by stack (`internal/chaos`); the tests run on a 32-bit architecture every night (`GOARCH=386`, `nightly.yml`).
+
+### Changed
+
+Each entry names the rule the code now follows.
+
+- **A result is text.** Every string of a `Result` from a built-in fingerprinter (`Variant`, `Details`, each `Evidence` line, the `Fingerprint`, every `Identity` field, attribute key and value) holds graphic characters only (`unicode.IsGraphic`) and valid UTF-8: control characters (C0, DEL, C1), format characters, line and paragraph separators are dropped. A string read off the wire is cut to 512 runes, any string of a result to 4096; an evidence line, metadata value or identity attribute that is empty after that is absent. A caller sees strings cut at those lengths and none of the dropped characters in any of them. `mqtt.Sanitize` follows the same rule. The PROFINET software revision shows a prefix octet outside printable ASCII as `V`. OPC UA lists at most 16 distinct security policies. (SEC-R01)
+- **`Target.Validate` checks `Host` and `Path`.** It refuses a `Host` with a space, a control character or `/`, and a `Path` that does not start with `/` or holds a space or a control character; `ParseTarget`, `Engine.Scan` and `Engine.Detect` return that error. Called directly, the OCPP, OpenADR and IEEE 2030.5 fingerprinters return a `*core.DetectError` of operation `request` for such a host, and OCPP for such a path (`Target.Path`, `ocpp.Config.Path`), before they connect. A caller that passed a path without the leading slash (`ocpp/CP-1`) now gets this error: write `/ocpp/CP-1`. Rule: `Host` and `Path` are one header value and the path of one request line. (SEC-R01)
+- **The trace is bounded.** `Result.Exchanges` holds, per connection of a fingerprinter, at most 256 exchanges and 4 MiB of probes and responses, then one entry without octets whose label counts what was left out. (CONC-R02)
+- **A UDP round trip reads at most 64 datagrams that are not its answer.** After that it ends as at the end of its window: with the first foreign datagram when there was one, otherwise with a `*core.DetectError` of operation `read` ("no answer among 64 datagrams") where it used to be a `*core.TimeoutError` once the window had passed. The debug log shows the first four discarded datagrams with their bytes and the rest as a count. (CONC-R02)
+- **The IEC 104 StartDT exchange is bounded.** Its window reads at most 256 APDUs, and the identity lists the 16 lowest common addresses and type identifiers and counts the rest (`1,2,… (+4 more)`). (CONC-R02)
+- **Integers are decoded within their type.** MMS: `localDetailCalled`, the two `maxServOutstanding` values and `version` of the Initiate-Response are decoded as the signed Integer32 and Integer16 they are; a value sent with the sign bit set is reported as the negative number it encodes, and contents that are not a value of the type (more than eight octets, out of range) leave the field out of the metadata and the signature. DNP3: an unsigned device attribute of more than eight octets is not rendered. BACnet: a tag is decoded with the length forms of two and four octets and the extended tag number, so a character string of more than 253 octets (an object or model name) is read whole; a length larger than what follows is not a tag. (SAFE-R01)
+- **HTTP response sizes are compared with what arrived.** A chunk size or a Content-Length is compared with the octets read, not added to an offset, so the framer gives the same answer where `int` has 32 bits as where it has 64: a size larger than what arrived is a response that is not complete, a size that does not fit an `int` is not a response. (SAFE-R01)
+- **Configuration is copied.** `NewEngine` copies `EngineConfig.Protocols` and `Exclude`, and `Engine.Config` returns copies. `sunspec.NewWithConfig`, `s7.NewWithConfig`, `dnp3.NewWithConfig` and `mms.NewWithConfig` copy their slices. `sunspec.DefaultBases` and `sparkplugb.Filters` are read and copied when a fingerprinter is constructed (a `sparkplugb.Fingerprinter` not made by `New` copies `Filters` at each `Detect`): a later change of the caller's slice or of the variable does not reach a fingerprinter. The fingerprinters no longer read the variables `iec104.Framer` and `dnp3.Framer`: assigning them changes no probe. The doc comments of `iec104.Parse`, `mqtt.ParsePacket`, `mqtt.ParsePublish` and `mqtt.ParseSuback` say that their results borrow the input. (SAFE-R02)
+- **Callbacks are recovered.** An `Observer` callback or the `Logger` that does not return normally no longer ends the scan (or, with `Parallel`, the process): it becomes the error of that probe's result, a `*core.DetectError` of operation `observer` or `logger`, and the scan goes on. When `OnStart` does not return normally the fingerprinter is not run. (CONC-R02)
+- **`Close` twice.** The second `Close` of an `mqtt.Client` returns nil and does nothing (it returned the connection's error). After `Close` its operations fail with a `*core.DetectError` that matches `net.ErrClosed`, as before; this is now documented. (CONC-R01)
+- **Nil and zero values return errors.** The zero `core.Engine`, a nil `*Engine` and `NewEngine(nil, …)` have no fingerprinters: `Scan` returns `ErrNoFingerprinters` and `Detect` a `*ProtocolNotFoundError`. `Registry.Register(nil)` returns an error, as does `Register` on a nil `*Registry`. `mqtt.Framer(limit)` returns 0 for an empty slice. (API-R02)
+
+- `otprobe`: the text and table formats, and `--debug`, write every value of a result as text. A character that is not graphic and an octet that is not UTF-8 appear as escapes (`\x1b`, `\n`, `\u202e`), so a value stays on its output line. JSON output is unchanged. (SEC-R01)
+- `otprobe`: the help of `--safe` says that it refuses `--iec104-startdt`.
+- `otprobe` is built on go-otfp v0.7.1, as v0.7.1 was. With the release built on v0.8.0, `--path` follows the `Target.Validate` rule above: a path that does not start with `/`, or holds a space, is invalid input (exit 3).
+
+### Fixed
+
+- `ieee2030`: the `/dcap` read closes its session, which releases the function it registered on the scan's context. Scans under one long-lived context no longer leave one registration each on it. (CONC-R01)
+
+---
+
 ## v0.7.1
 
 **Date:** 2026-11-14

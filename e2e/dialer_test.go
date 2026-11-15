@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -198,8 +197,7 @@ func TestEngineClosesEveryDialedConnection(t *testing.T) {
 	for _, sp := range udpSpeakers() {
 		targets = append(targets, testsrv.UDP(t, sp.h))
 	}
-	settle()
-	goroutines, fds := runtime.NumGoroutine(), chaos.FDs()
+	leaks := chaos.Snapshot()
 
 	var d countingDialer
 	for _, parallel := range []bool{false, true} {
@@ -222,7 +220,7 @@ func TestEngineClosesEveryDialedConnection(t *testing.T) {
 	if o, c := d.opened.Load(), d.closed.Load(); o != c {
 		t.Errorf("dialer opened %d connections, the library closed %d", o, c)
 	}
-	chaos.CheckLeaks(t, goroutines, fds)
+	leaks.Check(t)
 }
 
 // A Dialer that stalls until its context ends (a proxy that never answers)

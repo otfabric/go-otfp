@@ -11,10 +11,13 @@ import (
 	"bufio"
 	"bytes"
 	"fmt"
+	"math"
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode"
 
+	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/wire"
 )
 
@@ -35,8 +38,13 @@ func Request(s *wire.Session, label, method, host, path string, extra map[string
 }
 
 // RequestBody is Request with a request body, sent after the header with
-// its Content-Length.
+// its Content-Length. A method, host, path or header field that
+// CheckRequest refuses is not sent: the error is a *core.DetectError of
+// operation "request", and nothing is written.
 func RequestBody(s *wire.Session, label, method, host, path string, extra map[string]string, body []byte, maxBody int) (*Response, error) {
+	if err := CheckRequest(method, host, path, extra); err != nil {
+		return nil, &core.DetectError{Protocol: s.Protocol(), Op: "request", Err: err}
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s %s HTTP/1.1\r\n", method, path)
 	fmt.Fprintf(&b, "Host: %s\r\n", host)
@@ -90,6 +98,35 @@ func RequestBody(s *wire.Session, label, method, host, path string, extra map[st
 	return out, nil
 }
 
+// CheckRequest reports why a request line and header cannot be written
+// from the arguments, or nil when they can: one request is one request line
+// and one field line per header field, so none of them holds a line break.
+// The method is letters only; the path starts with "/" and holds no space
+// and no control character; the host holds no space, control character or
+// "/"; a field name is a token (RFC 9110 section 5.6.2) and a field value
+// holds no control character other than a tab. The fingerprinters call it
+// before they dial, so that a target they cannot ask is not connected to.
+func CheckRequest(method, host, path string, extra map[string]string) error {
+	if method == "" || strings.ContainsFunc(method, func(r rune) bool { return r < 'A' || r > 'Z' }) {
+		return fmt.Errorf("method %q is not an HTTP method", method)
+	}
+	if host == "" || strings.ContainsFunc(host, func(r rune) bool { return r <= ' ' || r == '/' || unicode.IsControl(r) }) {
+		return fmt.Errorf("host %q cannot be sent in a Host header: it is empty or holds a space, a control character or a slash", host)
+	}
+	if !strings.HasPrefix(path, "/") || strings.ContainsFunc(path, func(r rune) bool { return r <= ' ' || unicode.IsControl(r) }) {
+		return fmt.Errorf("path %q cannot be sent in a request line: it must start with / and hold no space or control character", path)
+	}
+	for k, v := range extra {
+		if k == "" || strings.ContainsFunc(k, func(r rune) bool { return r <= ' ' || r >= 0x7F || strings.ContainsRune("\"(),/:;<=>?@[\\]{}", r) }) {
+			return fmt.Errorf("header field name %q is not a token", k)
+		}
+		if strings.ContainsFunc(v, func(r rune) bool { return r != '\t' && unicode.IsControl(r) }) {
+			return fmt.Errorf("header field %s holds a control character", k)
+		}
+	}
+	return nil
+}
+
 // maxHeader bounds the response header block.
 const maxHeader = 16384
 
@@ -136,6 +173,9 @@ func Framer(b []byte) int {
 	switch {
 	case chunked:
 		return chunkedEnd(b, body)
+	case length > math.MaxInt-body:
+		// The sum does not fit an int: no frame has that length.
+		return -1
 	case length >= 0:
 		return body + length
 	}
@@ -171,7 +211,10 @@ func chunkedEnd(b []byte, off int) int {
 			}
 			return off + 2
 		}
-		if len(b) < off+int(size)+2 {
+		// The chunk and its CRLF must be within what was read. The size is
+		// compared with what remains, in 64 bits: off+size is not computed,
+		// since it need not fit an int where int has 32 bits.
+		if size > int64(len(b)-off-2) {
 			return 0
 		}
 		off += int(size) + 2

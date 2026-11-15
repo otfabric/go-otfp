@@ -5,8 +5,6 @@ package chaos
 import (
 	"context"
 	"fmt"
-	"os"
-	"runtime"
 	"testing"
 	"time"
 
@@ -91,8 +89,7 @@ func (s Suite) Run(t *testing.T) {
 		baseline[mode] = r
 	}
 
-	settle()
-	goroutines, fds := runtime.NumGoroutine(), FDs()
+	leaks := Snapshot()
 	t.Run("faults", func(t *testing.T) {
 		for _, x := range s.runs(modes) {
 			t.Run(x.name, func(t *testing.T) {
@@ -118,7 +115,7 @@ func (s Suite) Run(t *testing.T) {
 			})
 		}
 	})
-	CheckLeaks(t, goroutines, fds)
+	leaks.Check(t)
 }
 
 func (s Suite) clean(t *testing.T) core.Target {
@@ -180,45 +177,4 @@ func (s Suite) runs(modes []core.Mode) []run {
 		}
 	}
 	return out
-}
-
-func settle() {
-	runtime.GC()
-	time.Sleep(20 * time.Millisecond)
-}
-
-// FDs returns the number of open file descriptors of the process, or -1
-// where it cannot be counted.
-func FDs() int {
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
-		return -1
-	}
-	ents, err := os.ReadDir("/dev/fd")
-	if err != nil {
-		return -1
-	}
-	return len(ents)
-}
-
-// CheckLeaks fails t when, within 3 s, the goroutine and file-descriptor
-// counts do not come back to those given (a little slack allowed for
-// runtime and poller goroutines).
-func CheckLeaks(t testing.TB, goroutines, fds int) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		settle()
-		g, f := runtime.NumGoroutine(), FDs()
-		gok := g <= goroutines+2
-		fok := fds < 0 || f < 0 || f <= fds+2
-		if gok && fok {
-			return
-		}
-		if time.Now().After(deadline) {
-			buf := make([]byte, 1<<16)
-			t.Fatalf("leak: goroutines %d -> %d, file descriptors %d -> %d\n%s",
-				goroutines, g, fds, f, buf[:runtime.Stack(buf, true)])
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
 }

@@ -44,7 +44,9 @@ it, sorts the results and picks the best.
   protocol, and the probes it cancelled are not reported as results.
 - **Resilience** — each `Detect` runs under a panic recovery, so one broken
   fingerprinter becomes an error result instead of taking the scan down. The
-  `Observer` and `Logger` receive progress without affecting results.
+  `Observer` and `Logger` receive progress without affecting results; a
+  callback of theirs that does not return normally is recovered the same
+  way and becomes the error of that probe's result.
 
 `best()` chooses the matched result with the highest confidence; among equal
 confidences a refining protocol beats the one it refines.
@@ -76,7 +78,7 @@ Session provides:
   correlation (`RoundTripUDP`): replies that do not answer the request — a
   late answer to an earlier one, a duplicate, another peer's traffic — are
   discarded by invoke ID, sender context or activity UUID instead of being
-  taken as the answer.
+  taken as the answer, for at most 64 such datagrams per round trip.
 - **Error classification** — dial and I/O failures become `TimeoutError`,
   `ConnectionError` or `DetectError`, and `ErrClosed` marks a peer that
   closed without answering.
@@ -85,7 +87,10 @@ Session provides:
   would otherwise override the past deadline set on cancellation); the
   context's deadline caps every per-operation timeout.
 - **Tracing** — every probe/response pair is recorded when `Options.Trace`
-  is set, surfacing in `Result.Exchanges`.
+  is set, surfacing in `Result.Exchanges`, up to 256 exchanges and 4 MiB per
+  session.
+- **One owner** — a session belongs to one `Detect` call and one goroutine.
+  `Close` releases its hook on the scan's context and may be called twice.
 
 ## Shared wire formats
 

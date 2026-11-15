@@ -59,7 +59,8 @@ const (
 // Config configures the fingerprinter.
 type Config struct {
 	// Outstations are the addresses probed after the self address 0xFFFC.
-	// The default is 10, 1, 1024, 0, 3 and 4.
+	// The default is 10, 1, 1024, 0, 3 and 4. NewWithConfig copies the
+	// slice: the caller keeps its own.
 	Outstations []uint16
 	// Master is the source address of the probes. The default is 1;
 	// outstations commonly answer their configured master only.
@@ -77,7 +78,7 @@ func New() *Fingerprinter { return NewWithConfig(Config{}) }
 
 // NewWithConfig returns a fingerprinter with the given configuration.
 func NewWithConfig(c Config) *Fingerprinter {
-	f := &Fingerprinter{outstations: c.Outstations, master: c.Master}
+	f := &Fingerprinter{outstations: slices.Clone(c.Outstations), master: c.Master}
 	if len(f.outstations) == 0 {
 		f.outstations = []uint16{10, 1, 1024, 0, 3, 4}
 	}
@@ -116,7 +117,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		}
 		burst = append(burst, Frame(ctrlDIR|ctrlPRM|fcRequestLinkStatus, d, f.master, nil)...)
 	}
-	resp, err := s.RoundTrip("link-status", burst, Framer, maxFrame)
+	resp, err := s.RoundTrip("link-status", burst, frame, maxFrame)
 	var status *Header
 	for range maxFrames {
 		if err != nil {
@@ -136,7 +137,7 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 		if _, perr := ParseHeader(resp); perr != nil {
 			break
 		}
-		resp, err = s.Next("frame", Framer, maxFrame)
+		resp, err = s.Next("frame", frame, maxFrame)
 	}
 	if status == nil {
 		if err != nil && !errors.Is(err, wire.ErrClosed) && b.Confidence() == 0 {
@@ -200,15 +201,15 @@ func (f *Fingerprinter) identify(b *fpx.Builder, s *wire.Session, outstation, ma
 	// qualifier 0x06 (all objects).
 	user := []byte{0xC0, 0xC0, 0x01, 0x00, 0xFE, 0x06}
 	req := Frame(ctrlDIR|ctrlPRM|fcUnconfirmedData, outstation, master, user)
-	var frame []byte
+	var reply []byte
 	err := s.Send(req)
 	if err == nil {
-		frame, err = s.ReadUntil(Framer, maxFrame, until())
+		reply, err = s.ReadUntil(frame, maxFrame, until())
 	}
-	s.Record("read-g0v254", req, frame)
+	s.Record("read-g0v254", req, reply)
 	var apdu []byte
 	for i := 0; i < 32 && err == nil; i++ {
-		h, herr := ParseHeader(frame)
+		h, herr := ParseHeader(reply)
 		if herr == nil && h.Ctrl&ctrlDIR == 0 && h.Ctrl&ctrlPRM != 0 && len(h.Data) > 0 {
 			th := h.Data[0]
 			if th&0x40 != 0 { // FIR restarts the fragment
@@ -219,8 +220,8 @@ func (f *Fingerprinter) identify(b *fpx.Builder, s *wire.Session, outstation, ma
 				break
 			}
 		}
-		if frame, err = s.ReadUntil(Framer, maxFrame, until()); frame != nil || err == nil {
-			s.Record("response", nil, frame)
+		if reply, err = s.ReadUntil(frame, maxFrame, until()); reply != nil || err == nil {
+			s.Record("response", nil, reply)
 		}
 	}
 	if err != nil && !time.Now().Before(end) {
@@ -269,8 +270,12 @@ type Header struct {
 	Data []byte
 }
 
-// Framer reads one data-link frame.
-var Framer wire.Framer = func(b []byte) int {
+// Framer reads one data-link frame. It is a variable for compatibility
+// and is not to be assigned: the fingerprinter frames its reads with the
+// function the variable is initialised with, whatever the variable holds.
+var Framer wire.Framer = frame
+
+func frame(b []byte) int {
 	if len(b) >= 1 && b[0] != start0 || len(b) >= 2 && b[1] != start1 {
 		return -1
 	}
@@ -290,7 +295,8 @@ func FrameLen(length byte) int {
 	return headerLen + n + 2*int(math.Ceil(float64(n)/16))
 }
 
-// ParseHeader validates a frame's start octets, length and CRCs.
+// ParseHeader validates a frame's start octets, length and CRCs. The
+// Header is the caller's: its Data is a copy, not a part of b.
 func ParseHeader(b []byte) (Header, error) {
 	if len(b) < headerLen {
 		return Header{}, fmt.Errorf("%d octets is shorter than a link header", len(b))
@@ -427,7 +433,10 @@ func attrString(typ byte, v []byte) string {
 	switch typ {
 	case 1: // visible string
 		return fpx.Clean(string(v))
-	case 2: // unsigned integer
+	case 2: // unsigned integer, least significant octet first
+		if len(v) > 8 {
+			return "" // does not fit 64 bits: not rendered, rather than truncated
+		}
 		var x uint64
 		for _, v0 := range slices.Backward(v) {
 			x = x<<8 | uint64(v0)

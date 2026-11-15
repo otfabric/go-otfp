@@ -20,7 +20,9 @@ Detect and identify behave the same: OCPP exposes no device identity before the 
 type Config struct {
 	// Path is the WebSocket path. The default is /ocpp/<random id>, which
 	// go-ocpp and most CSMSs require (the station identity is the last
-	// segment).
+	// segment). It is sent as it is in the request line: it starts with
+	// "/" and holds no space and no control character, or Detect returns
+	// an error without connecting.
 	Path string
 }
 ```
@@ -59,7 +61,7 @@ NewWithConfig returns a fingerprinter with the given configuration.
 func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error)
 ```
 
-Detect probes target.
+Detect probes target. The path (Config.Path, else Target.Path) and the target's host must be what one HTTP request line and Host header can carry (httpx.CheckRequest): otherwise Detect returns a \*core.DetectError of operation "request" and does not connect.
 
 #### func (Fingerprinter) Info
 

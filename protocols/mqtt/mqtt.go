@@ -34,7 +34,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/otfabric/go-otfp/core"
 	"github.com/otfabric/go-otfp/internal/fpx"
@@ -57,7 +56,12 @@ type Fingerprinter struct {
 	// Window bounds the wait for the $SYS version in identify mode. Zero
 	// means one second, capped by the target timeout.
 	Window time.Duration
-	// ClientID, when set, replaces the random client identifier.
+	// ClientID, when set, replaces the random client identifier. An MQTT
+	// broker has one session per client identifier: with the identifier
+	// of a client that is connected, the broker disconnects that client,
+	// and the clean session of the probe discards the session the broker
+	// stored for it (its subscriptions and queued messages). Use an
+	// identifier no device or application uses.
 	ClientID string
 }
 
@@ -277,7 +281,7 @@ func (f *Fingerprinter) sysVersion(b *fpx.Builder, c *Client, target core.Target
 		case TypePublish:
 			m, err := ParsePublish(c.Level, p)
 			if err == nil && version == "" && isSysVersion(m.Topic) {
-				version, topic = Sanitize(string(m.Payload), 128), m.Topic
+				version, topic = Sanitize(string(m.Payload), 128), Sanitize(m.Topic, 128)
 			}
 		}
 	}
@@ -319,13 +323,8 @@ func isSysVersion(topic string) bool {
 	return ok && node != "" && !strings.Contains(node, "/")
 }
 
-// Sanitize returns s as printable UTF-8 of at most max runes: invalid
-// sequences and control characters are dropped.
-func Sanitize(s string, max int) string {
-	s = fpx.Clean(strings.ToValidUTF8(s, ""))
-	if utf8.RuneCountInString(s) <= max {
-		return s
-	}
-	r := []rune(s)
-	return string(r[:max])
-}
+// Sanitize returns s as text of at most max runes, without leading and
+// trailing spaces: octets that are not UTF-8, control and format characters
+// and every other character that is not graphic (unicode.IsGraphic) are
+// dropped.
+func Sanitize(s string, max int) string { return fpx.Text(s, max) }

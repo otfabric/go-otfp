@@ -41,8 +41,11 @@ type detectFlags struct {
 	// canopenNode is the CANopen node identified through a CiA 309-3
 	// gateway; 0 means the gateway's default node.
 	canopenNode int
-	trace       bool
-	debug       bool
+	// iec104StartDT lets --identify start data transfer at an IEC 104
+	// station (STARTDT, acknowledgement, STOPDT).
+	iec104StartDT bool
+	trace         bool
+	debug         bool
 	// sourceAddr and proxy build the dialer of every probe (netdial).
 	sourceAddr string
 	proxy      string
@@ -93,7 +96,7 @@ docs/exitcodes.md.`,
 	fl.StringSliceVar(&f.protocols, "protocol", nil, "probe only these protocols (repeatable or comma-separated)")
 	fl.StringSliceVar(&f.exclude, "exclude", nil, "skip these protocols")
 	fl.BoolVarP(&f.identify, "identify", "i", false, "read the device identity (vendor, model, version, serial) where supported")
-	fl.BoolVar(&f.safe, "safe", false, "OT-safe scan: passive probes only, likely protocols only, 250ms between probes")
+	fl.BoolVar(&f.safe, "safe", false, "OT-safe scan: passive probes only, likely protocols only, 250ms between probes; refuses --iec104-startdt")
 	fl.BoolVar(&f.parallel, "parallel", false, "probe protocols concurrently (many field devices accept one connection: off by default)")
 	fl.IntVar(&f.maxConc, "max-concurrency", 0, "limit concurrent probes with --parallel (0 = unbounded)")
 	fl.DurationVar(&f.minGap, "min-interval", 0, "minimum delay between probes")
@@ -101,6 +104,7 @@ docs/exitcodes.md.`,
 	formatFlag(cmd, &f.format, detectFormats...)
 	fl.StringVar(&f.path, "path", "", "WebSocket path OCPP tries first (e.g. the station id)")
 	fl.IntVar(&f.canopenNode, "canopen-node", 0, "CANopen node (1-127) to identify through a CiA 309-3 gateway (default: the gateway's default node)")
+	fl.BoolVar(&f.iec104StartDT, "iec104-startdt", false, "with --identify: start data transfer at an IEC 104 station (STARTDT), acknowledge what it sends and stop again, to read its common address; takes data transfer and the acknowledged events from a connected control centre (not with --safe)")
 	fl.BoolVar(&f.trace, "trace", false, "include the raw probe and response bytes")
 	fl.BoolVar(&f.debug, "debug", false, "log every probe to stderr")
 	fl.StringVar(&f.sourceAddr, "source-addr", "", "bind every probe to this local IP address (an interface's address)")
@@ -297,22 +301,64 @@ func selectedProtocols(f detectFlags) (map[core.Protocol]bool, error) {
 }
 
 // registry is the default registry, with the CANopen fingerprinter set to
-// --canopen-node when given.
+// --canopen-node when given, and the IEC 104 fingerprinter kept from
+// starting data transfer unless --iec104-startdt is given.
 func registry(f detectFlags) *core.Registry {
 	fps := otfp.Fingerprinters()
-	if f.canopenNode != 0 {
-		for i, fp := range fps {
-			if fp.Info().Protocol == core.ProtocolCANopen {
+	for i, fp := range fps {
+		switch fp.Info().Protocol {
+		case core.ProtocolCANopen:
+			if f.canopenNode != 0 {
 				fps[i] = canopen.NewWithConfig(canopen.Config{Node: f.canopenNode})
+			}
+		case core.ProtocolIEC104:
+			if !f.iec104StartDT {
+				fps[i] = iec104WithoutStartDT{fp}
 			}
 		}
 	}
 	return core.NewRegistry().MustRegister(fps...)
 }
 
+// iec104WithoutStartDT is the IEC 104 fingerprinter without the exchange
+// that changes the station: in identify mode it runs the detection
+// exchange (TESTFR act/con) and says that data transfer was not started.
+//
+// The go-otfp release this tool is built on (v0.7.1) starts data transfer
+// whenever it identifies, so the tool keeps identify mode from reaching it.
+// From go-otfp v0.8.0 that is the library's default and STARTDT is the
+// option iec104.Fingerprinter.StartDT: when the tool is built on it, this
+// type goes and --iec104-startdt sets that option
+// (TestIEC104StartDTFlag fails until it does).
+type iec104WithoutStartDT struct{ core.Fingerprinter }
+
+// Info describes what the tool sends: the library's description, as far as
+// it is about detection, and the flag for the rest.
+func (f iec104WithoutStartDT) Info() core.Info {
+	info := f.Fingerprinter.Info()
+	info.Description = "APCI TESTFR act/con; with --iec104-startdt, STARTDT/STOPDT and the spontaneous ASDUs in between in identify mode"
+	return info
+}
+
+func (f iec104WithoutStartDT) Detect(ctx context.Context, target core.Target, opts core.Options) (core.Result, error) {
+	identify := opts.Mode == core.ModeIdentify
+	opts.Mode = core.ModeDetect
+	r, err := f.Fingerprinter.Detect(ctx, target, opts)
+	if identify && err == nil && r.Matched {
+		r = r.WithEvidence("data transfer not started: the common address and the ASDU types are read only with STARTDT, which is opt-in")
+	}
+	return r, err
+}
+
 func engineConfig(f detectFlags, sweep bool, stderr io.Writer) (core.EngineConfig, error) {
 	if f.canopenNode < 0 || f.canopenNode > 127 {
 		return core.EngineConfig{}, fail(kindInvalidInput, codeInvalidFlags, "--canopen-node %d: a CANopen node is 1 to 127", f.canopenNode)
+	}
+	if f.iec104StartDT && f.safe {
+		return core.EngineConfig{}, fail(kindInvalidInput, codeInvalidFlags, "--iec104-startdt starts data transfer at the station and acknowledges its events: it is not sent with --safe")
+	}
+	if f.iec104StartDT && !f.identify {
+		return core.EngineConfig{}, fail(kindInvalidInput, codeInvalidFlags, "--iec104-startdt needs --identify")
 	}
 	cfg := core.DefaultEngineConfig()
 	if f.safe {
@@ -446,9 +492,9 @@ func hasPort(s string) bool {
 type debugObserver struct{ w io.Writer }
 
 func (d debugObserver) OnStart(p core.Protocol, t core.Target) {
-	fmt.Fprintf(d.w, "probe %s %s\n", p.Slug(), t)
+	fmt.Fprintf(d.w, "probe %s %s\n", p.Slug(), printable(t.String()))
 }
 
 func (d debugObserver) OnResult(r core.Result) {
-	fmt.Fprintf(d.w, "  -> %s (%s)\n", r, r.Duration.Round(time.Millisecond))
+	fmt.Fprintf(d.w, "  -> %s (%s)\n", printable(r.String()), r.Duration.Round(time.Millisecond))
 }

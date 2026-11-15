@@ -58,7 +58,34 @@ func FixedHeader(headerLen int, length func(h []byte) int) Framer {
 	}
 }
 
-// Session is one connection of a fingerprinter to its target.
+// Bounds of one session, whatever the peer sends and however long a
+// listening window is.
+const (
+	// MaxExchanges and MaxTraceBytes bound the exchange trace
+	// (core.Options.Trace): at most MaxExchanges exchanges and
+	// MaxTraceBytes octets of probes and responses are kept. What does not
+	// fit is counted, and Exchanges ends with one entry that says how much
+	// was left out.
+	MaxExchanges  = 256
+	MaxTraceBytes = 4 << 20
+
+	// MaxStrays bounds the datagrams one UDP round trip reads that are not
+	// its answer (late or duplicate answers, other peers' traffic, foreign
+	// datagrams): after that many the round trip ends as it does when its
+	// window ends. The first maxStraysLogged are logged with their octets,
+	// the rest as a count.
+	MaxStrays       = 64
+	maxStraysLogged = 4
+)
+
+// errStrays ends a UDP round trip that read MaxStrays datagrams without
+// its answer among them.
+var errStrays = fmt.Errorf("no answer among %d datagrams", MaxStrays)
+
+// Session is one connection of a fingerprinter to its target. It belongs to
+// one Detect call and is used from one goroutine: its methods, Close
+// included, are not safe for concurrent use. The scan's context ends its
+// pending I/O from outside.
 type Session struct {
 	ctx     context.Context
 	proto   core.Protocol
@@ -69,7 +96,11 @@ type Session struct {
 	trace   bool
 	log     core.Logger
 	stop    func() bool
+	closed  bool
 	ex      []core.Exchange
+	exBytes int    // octets of probes and responses in ex
+	left    int    // exchanges not recorded: a bound was reached
+	leftLen uint64 // their octets
 	pending []byte // bytes read past the end of the last frame
 	idle    time.Duration
 	// Retries is the number of retransmissions of a UDP request when no
@@ -165,29 +196,64 @@ func (s *Session) classify(op string, err error) error {
 // Conn returns the underlying connection.
 func (s *Session) Conn() net.Conn { return s.conn }
 
+// Protocol returns the protocol the session's errors are attributed to.
+func (s *Session) Protocol() core.Protocol { return s.proto }
+
 // Timeout returns the per-operation timeout.
 func (s *Session) Timeout() time.Duration { return s.timeout }
 
-// Close closes the connection.
+// Close releases the session's hook on the scan's context and closes the
+// connection. The first call returns the connection's close error; a later
+// call does nothing and returns nil. After Close every operation fails
+// with the connection's error (a *core.DetectError that matches
+// net.ErrClosed).
 func (s *Session) Close() error {
+	if s.closed {
+		return nil
+	}
+	s.closed = true
 	s.stop()
 	return s.conn.Close()
 }
 
-// Exchanges returns the recorded exchanges (nil unless tracing).
-func (s *Session) Exchanges() []core.Exchange { return s.ex }
+// Exchanges returns the recorded exchanges (nil unless tracing): at most
+// MaxExchanges of them, holding at most MaxTraceBytes octets, and, when
+// more were made than that, one last entry without octets whose label
+// counts what was left out.
+func (s *Session) Exchanges() []core.Exchange {
+	if s.left == 0 {
+		return s.ex
+	}
+	return append(s.ex[:len(s.ex):len(s.ex)], core.Exchange{
+		Label: fmt.Sprintf("not recorded: %d exchanges, %d octets (a trace holds %d exchanges and %d octets per connection)",
+			s.left, s.leftLen, MaxExchanges, MaxTraceBytes),
+	})
+}
 
 // Record adds an exchange to the trace, e.g. for a fingerprinter that does
-// its own I/O on Conn.
+// its own I/O on Conn. The trace is bounded; see Exchanges.
 func (s *Session) Record(label string, probe, resp []byte) {
 	s.log.Debugf("otfp: %s %s %s: sent % x, received % x", s.proto.Slug(), s.addr, label, probe, resp)
-	if s.trace {
-		s.ex = append(s.ex, core.Exchange{
-			Label:    label,
-			Probe:    append([]byte(nil), probe...),
-			Response: append([]byte(nil), resp...),
-		})
+	s.keep(label, probe, resp)
+}
+
+// keep adds an exchange to the trace when tracing and within the bounds.
+func (s *Session) keep(label string, probe, resp []byte) {
+	if !s.trace {
+		return
 	}
+	n := len(probe) + len(resp)
+	if len(s.ex) >= MaxExchanges || n > MaxTraceBytes-s.exBytes {
+		s.left++
+		s.leftLen += uint64(n)
+		return
+	}
+	s.exBytes += n
+	s.ex = append(s.ex, core.Exchange{
+		Label:    label,
+		Probe:    append([]byte(nil), probe...),
+		Response: append([]byte(nil), resp...),
+	})
 }
 
 // Send writes b.
@@ -226,7 +292,8 @@ func (s *Session) RoundTrip(label string, probe []byte, frame Framer, max int) (
 // RoundTripUDP is RoundTrip for a datagram exchange whose answers can be
 // correlated with the request: datagrams accept rejects (late or duplicate
 // answers to earlier requests, other peers' traffic) are discarded and the
-// read continues within the same retransmission window.
+// read continues within the same retransmission window, for at most
+// MaxStrays such datagrams.
 func (s *Session) RoundTripUDP(label string, probe []byte, max int, accept func([]byte) bool) ([]byte, error) {
 	return s.RoundTripDatagram(label, probe, max, func(dg []byte) Verdict {
 		if accept(dg) {
@@ -255,6 +322,9 @@ const (
 
 // RoundTripDatagram is RoundTripUDP with a three-way classification of the
 // datagrams received; see Verdict. Empty datagrams are always foreign.
+// After MaxStrays datagrams that are not the answer the round trip ends
+// without waiting for its window: with the first foreign datagram when
+// there was one, otherwise with a *core.DetectError of operation "read".
 func (s *Session) RoundTripDatagram(label string, probe []byte, max int, classify func([]byte) Verdict) ([]byte, error) {
 	resp, err := s.udpRoundTrip(probe, max, classify)
 	s.Record(label, probe, resp)
@@ -344,7 +414,31 @@ func (s *Session) udpRoundTrip(probe []byte, max int, classify func([]byte) Verd
 	var (
 		foreign    []byte
 		hasForeign bool
+		strays     int
 	)
+	// stray counts and records a datagram that is not the answer, and
+	// reports whether the round trip goes on listening.
+	stray := func(dg []byte) bool {
+		strays++
+		if strays <= maxStraysLogged {
+			s.Record("discarded", nil, dg)
+		} else {
+			s.keep("discarded", nil, dg)
+		}
+		return strays < MaxStrays
+	}
+	defer func() {
+		if strays > maxStraysLogged {
+			s.log.Debugf("otfp: %s %s: %d more datagrams discarded", s.proto.Slug(), s.addr, strays-maxStraysLogged)
+		}
+	}()
+	// ended is the outcome once MaxStrays datagrams were not the answer.
+	ended := func() ([]byte, error) {
+		if hasForeign {
+			return foreign, nil
+		}
+		return nil, &core.DetectError{Protocol: s.proto, Op: "read", Err: errStrays}
+	}
 	for i := range attempts {
 		if err := s.Send(probe); err != nil {
 			return nil, err
@@ -358,7 +452,9 @@ func (s *Session) udpRoundTrip(probe []byte, max int, classify func([]byte) Verd
 			if err != nil && s.ctx.Err() == nil && msgTooLarge(err) {
 				// Windows reports a datagram larger than the buffer as
 				// an error (WSAEMSGSIZE): it is not an answer.
-				s.Record("discarded", nil, buf[:min(n, len(buf))])
+				if !stray(buf[:min(n, len(buf))]) {
+					return ended()
+				}
 				continue
 			}
 			if err != nil {
@@ -393,8 +489,10 @@ func (s *Session) udpRoundTrip(probe []byte, max int, classify func([]byte) Verd
 			}
 			// A stray datagram (a late answer to an earlier request,
 			// a duplicate, another peer's traffic): keep listening in
-			// the same window.
-			s.Record("discarded", nil, dg)
+			// the same window, for a bounded number of them.
+			if !stray(dg) {
+				return ended()
+			}
 		}
 	}
 	return nil, s.classify("read", context.DeadlineExceeded)

@@ -422,99 +422,119 @@ func readPropertyValue(a apdu) (byte, []byte, bool) {
 	// (array index), then read the first application tag inside tag 3.
 	p := a.body
 	for len(p) > 0 {
-		t := p[0]
-		if t&0x08 != 0 && t&0x07 == 0x06 && t>>4 == 3 { // opening tag 3
-			return appTag(p[1:])
-		}
-		n, ok := tagLen(p)
+		h, ok := parseTag(p)
 		if !ok {
 			return 0, nil, false
 		}
-		p = p[n:]
+		if h.opening && h.number == 3 {
+			return appTag(p[h.size:])
+		}
+		p = p[h.size+h.length:]
 	}
 	return 0, nil, false
+}
+
+// tagHeader is a decoded BACnet tag (ASHRAE 135 clause 20.2.1): the initial
+// octet carries the tag number (15 announces a tag number octet), the class
+// and the length/value/type field; 5 in that field announces a length
+// octet, whose values 254 and 255 announce a length of two and of four
+// octets.
+type tagHeader struct {
+	number  byte // the tag number, 0..254
+	context bool // context-specific class (else application)
+	// opening and closing mark the tags that bracket constructed data;
+	// they have no contents of their own.
+	opening, closing bool
+	size             int // octets of the tag itself
+	length           int // octets of contents that follow it; within the input
+}
+
+// parseTag decodes the tag at the start of p. It reports false for an
+// empty input, the reserved tag number 255, a tag cut short, and a length
+// that is larger than what follows the tag: every length is compared with
+// the remaining input before it is used.
+func parseTag(p []byte) (tagHeader, bool) {
+	if len(p) == 0 {
+		return tagHeader{}, false
+	}
+	h := tagHeader{number: p[0] >> 4, context: p[0]&0x08 != 0, size: 1}
+	lvt := p[0] & 0x07
+	if h.number == 0x0F { // extended tag number
+		if len(p) < 2 || p[1] == 0xFF {
+			return tagHeader{}, false
+		}
+		h.number, h.size = p[1], 2
+	}
+	if h.context && lvt >= 6 {
+		h.opening, h.closing = lvt == 6, lvt == 7
+		return h, true
+	}
+	length := uint32(lvt)
+	if lvt == 5 { // extended length
+		if len(p) < h.size+1 {
+			return tagHeader{}, false
+		}
+		ext := p[h.size]
+		h.size++
+		switch ext {
+		case 254:
+			if len(p) < h.size+2 {
+				return tagHeader{}, false
+			}
+			length = uint32(binary.BigEndian.Uint16(p[h.size:]))
+			h.size += 2
+		case 255:
+			if len(p) < h.size+4 {
+				return tagHeader{}, false
+			}
+			length = binary.BigEndian.Uint32(p[h.size:])
+			h.size += 4
+		default:
+			length = uint32(ext)
+		}
+	}
+	if uint64(length) > uint64(len(p)-h.size) {
+		return tagHeader{}, false
+	}
+	h.length = int(length)
+	return h, true
 }
 
 // appTag decodes one application-tagged primitive and returns its tag
 // number and value octets.
 func appTag(p []byte) (byte, []byte, bool) {
-	if len(p) == 0 || p[0]&0x08 != 0 {
+	h, ok := parseTag(p)
+	if !ok || h.context {
 		return 0, nil, false
 	}
-	t := p[0]
-	tagNum := t >> 4
-	lv := int(t & 0x07)
-	off := 1
-	if lv == 5 {
-		if len(p) < 2 {
-			return 0, nil, false
-		}
-		lv = int(p[1])
-		off = 2
-	}
-	if off+lv > len(p) {
-		return 0, nil, false
-	}
-	return tagNum, p[off : off+lv], true
+	return h.number, p[h.size : h.size+h.length], true
 }
 
-// firstContextTag returns the first context tag at or after the given tag
-// number.
+// firstContextTag returns the first context tag with the given tag number
+// among the primitive context tags at the start of p; it stops at an
+// application tag and at an opening or closing tag.
 func firstContextTag(p []byte, want byte) (tag byte, val, rest []byte, ok bool) {
 	for len(p) > 0 {
-		t := p[0]
-		if t&0x08 == 0 {
+		h, ok := parseTag(p)
+		if !ok || !h.context || h.opening || h.closing {
 			return 0, nil, nil, false
 		}
-		tagNum := t >> 4
-		lv := int(t & 0x07)
-		if lv == 5 { // extended length
-			if len(p) < 2 {
-				return 0, nil, nil, false
-			}
-			lv = int(p[1])
-			if 2+lv > len(p) {
-				return 0, nil, nil, false
-			}
-			if tagNum == want {
-				return tagNum, p[2 : 2+lv], p[2+lv:], true
-			}
-			p = p[2+lv:]
-			continue
+		end := h.size + h.length
+		if h.number == want {
+			return h.number, p[h.size:end], p[end:], true
 		}
-		if 1+lv > len(p) {
-			return 0, nil, nil, false
-		}
-		if tagNum == want {
-			return tagNum, p[1 : 1+lv], p[1+lv:], true
-		}
-		p = p[1+lv:]
+		p = p[end:]
 	}
 	return 0, nil, nil, false
 }
 
-// tagLen returns the octets the tag at p occupies.
+// tagLen returns the octets the tag at p occupies, contents included.
 func tagLen(p []byte) (int, bool) {
-	if len(p) == 0 {
+	h, ok := parseTag(p)
+	if !ok {
 		return 0, false
 	}
-	t := p[0]
-	if t&0x07 == 0x06 || t&0x07 == 0x07 { // opening/closing tag
-		return 1, true
-	}
-	lv := int(t & 0x07)
-	off := 1
-	if lv == 5 {
-		if len(p) < 2 {
-			return 0, false
-		}
-		lv = int(p[1])
-		off = 2
-	}
-	if off+lv > len(p) {
-		return 0, false
-	}
-	return off + lv, true
+	return h.size + h.length, true
 }
 
 // charString decodes a BACnet CharacterString application value (tag 7):
@@ -561,14 +581,11 @@ func parseIAm(apduBytes []byte) (instance uint32, vendor uint32, ok bool) {
 		}
 		p = p[n:]
 	}
-	if len(p) >= 1 && p[0]&0x08 == 0 {
-		lv := int(p[0] & 0x07)
-		if 1+lv <= len(p) {
-			// A value wider than 32 bits is not a vendor identifier
-			// (an Unsigned16); do not report it truncated.
-			if v, good := unsignedTag(p[1 : 1+lv]); good && v <= math.MaxUint32 {
-				vendor = uint32(v)
-			}
+	if _, val, good := appTag(p); good {
+		// A value wider than 32 bits is not a vendor identifier
+		// (an Unsigned16); do not report it truncated.
+		if v, good := unsignedTag(val); good && v <= math.MaxUint32 {
+			vendor = uint32(v)
 		}
 	}
 	return instance, vendor, true

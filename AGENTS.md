@@ -21,7 +21,7 @@ This repository follows **otfabric/engineering policy 1.6**, profile **protocol-
 ## Hard rules
 
 1. Never lower `COVER_MIN` (90), add lint suppressions, or skip or delete tests to make CI pass.
-2. Safety contract: detection sends a handshake or one harmless request; identify uses the protocol's own read-only identity service. Never write, control or reconfigure a device.
+2. Safety contract: detection sends a handshake or one harmless request; identify uses the protocol's own read-only identity service, and sends nothing more where a protocol has none (IEC 60870-5-104: TESTFR only). A step that changes a station's state, IEC 104 STARTDT and its acknowledgement, is an explicit opt-in (`iec104.Fingerprinter.StartDT`, `otprobe --iec104-startdt`), off by default and refused with an error under the safe configuration (`SafeEngineConfig`, `--safe`). Never write, control or reconfigure a device.
 3. The library stays dependency-free (standard library only). Never import a `go-<protocol>` library or an `*-interop` package from library or CLI code: they are for validation only.
 4. Never claim interoperability beyond the evidence in INTEROPERABILITY.md.
 5. `core.Protocol` constants are appended, never renumbered.

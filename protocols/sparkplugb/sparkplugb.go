@@ -31,6 +31,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -43,7 +44,11 @@ import (
 
 const proto = core.ProtocolSparkplugB
 
-// Filters are the topic filters subscribed to.
+// Filters are the topic filters subscribed to. New copies them: change the
+// variable, if at all, before fingerprinters are constructed and not while
+// one is; a fingerprinter from New keeps the filters it was constructed
+// with. A Fingerprinter that was not made by New copies them at the start
+// of each Detect.
 var Filters = []string{"spBv1.0/STATE/+", "STATE/+", "spBv1.0/+/+/+", "spBv1.0/+/+/+/+"}
 
 // Bounds.
@@ -64,12 +69,22 @@ type Fingerprinter struct {
 	Window time.Duration
 	// MaxMessages bounds the messages read; zero means DefaultMaxMessages.
 	MaxMessages int
-	// ClientID, when set, replaces the random client identifier.
+	// ClientID, when set, replaces the random client identifier. An MQTT
+	// broker has one session per client identifier: with the identifier
+	// of a client that is connected, the broker disconnects that client,
+	// and the clean session of the probe discards the session the broker
+	// stored for it (its subscriptions and queued messages). Use an
+	// identifier no device or application uses.
 	ClientID string
+
+	// filters is New's copy of Filters, joined with U+0000 (which no MQTT
+	// string holds); empty for a Fingerprinter that was not made by New. A
+	// string, so that the type stays comparable and the copy cannot change.
+	filters string
 }
 
 // New returns a Sparkplug B fingerprinter.
-func New() *Fingerprinter { return &Fingerprinter{} }
+func New() *Fingerprinter { return &Fingerprinter{filters: strings.Join(Filters, "\x00")} }
 
 // Info describes the fingerprinter.
 func (f *Fingerprinter) Info() core.Info {
@@ -143,7 +158,13 @@ func (f *Fingerprinter) Detect(ctx context.Context, target core.Target, opts cor
 
 // listen subscribes and reads the messages of the window.
 func (f *Fingerprinter) listen(ctx context.Context, c *mqtt.Client, target core.Target, opts core.Options, o *observer) {
-	id, err := c.Subscribe(Filters...)
+	// One list for the whole exchange: the SUBSCRIBE, the count of the
+	// SUBACK's codes and the UNSUBSCRIBE agree.
+	filters := slices.Clone(Filters)
+	if f.filters != "" {
+		filters = strings.Split(f.filters, "\x00")
+	}
+	id, err := c.Subscribe(filters...)
 	if err != nil {
 		return
 	}
@@ -174,7 +195,7 @@ func (f *Fingerprinter) listen(ctx context.Context, c *mqtt.Client, target core.
 		}
 		switch p.Type {
 		case mqtt.TypeSuback:
-			codes, err := mqtt.ParseSuback(c.Level, p, id, len(Filters))
+			codes, err := mqtt.ParseSuback(c.Level, p, id, len(filters))
 			if err != nil {
 				continue
 			}
@@ -196,7 +217,7 @@ func (f *Fingerprinter) listen(ctx context.Context, c *mqtt.Client, target core.
 		}
 	}
 	if subscribed {
-		c.Unsubscribe(Filters...)
+		c.Unsubscribe(filters...)
 	}
 }
 

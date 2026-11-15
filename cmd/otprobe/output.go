@@ -27,9 +27,9 @@ func writeScans(w io.Writer, scans []scan, f detectFlags) error {
 	case "json":
 		err = writeJSON(sw, scans, f.trace)
 	case "table":
-		err = writeTable(sw, scans)
+		err = writeTable(printableWriter{sw}, scans)
 	default:
-		err = writeText(sw, scans, f.trace)
+		err = writeText(printableWriter{sw}, scans, f.trace)
 	}
 	return cmp.Or(err, sw.err)
 }
@@ -88,30 +88,30 @@ func writeText(w io.Writer, scans []scan, trace bool) error {
 
 func writeTextScan(w io.Writer, s scan, trace bool) {
 	r := s.report
-	fmt.Fprintf(w, "Target:   %s\n", r.Target)
+	fmt.Fprintf(w, "Target:   %s\n", printable(r.Target.String()))
 	if r.Best.Matched {
 		fmt.Fprintf(w, "Detected: %s", r.Best.Protocol)
 		if r.Best.Variant != "" {
-			fmt.Fprintf(w, " (%s)", r.Best.Variant)
+			fmt.Fprintf(w, " (%s)", printable(r.Best.Variant))
 		}
 		fmt.Fprintf(w, ", confidence %.2f\n", r.Best.Confidence)
 	} else {
 		fmt.Fprintf(w, "Detected: none (%s)\n", why(r))
 	}
 	for _, res := range r.Matches() {
-		fmt.Fprintf(w, "\n  %s  %.2f  %s\n", label(res), res.Confidence, res.Details)
+		fmt.Fprintf(w, "\n  %s  %.2f  %s\n", printable(label(res)), res.Confidence, printable(res.Details))
 		for _, e := range res.Evidence {
-			fmt.Fprintf(w, "    - %s\n", e)
+			fmt.Fprintf(w, "    - %s\n", printable(e))
 		}
 		width := 11 // len("fingerprint")
 		if res.Identity != nil {
 			for k := range res.Identity.Attributes {
-				width = max(width, len(k))
+				width = max(width, len(printable(k)))
 			}
 			writeIdentity(w, res.Identity, width)
 		}
 		if res.Fingerprint != nil {
-			fmt.Fprintf(w, "    %-*s  %s\n", width, "fingerprint", res.Fingerprint)
+			fmt.Fprintf(w, "    %-*s  %s\n", width, "fingerprint", printable(res.Fingerprint.String()))
 		}
 	}
 	fmt.Fprintf(w, "\n  %s in %s\n", plural(len(r.Results), "probe"), r.Duration.Round(time.Millisecond))
@@ -134,7 +134,7 @@ func why(r core.Report) string {
 func writeIdentity(w io.Writer, id *core.Identity, width int) {
 	field := func(name, v string) {
 		if v != "" {
-			fmt.Fprintf(w, "    %-*s  %s\n", width, name, v)
+			fmt.Fprintf(w, "    %-*s  %s\n", width, printable(name), printable(v))
 		}
 	}
 	field("vendor", id.Vendor)
@@ -156,7 +156,7 @@ func writeTrace(w io.Writer, r core.Report) {
 		}
 		fmt.Fprintf(w, "\n  trace %s\n", res.Protocol.Slug())
 		for _, x := range res.Exchanges {
-			fmt.Fprintf(w, "    %s\n", x.Label)
+			fmt.Fprintf(w, "    %s\n", printable(x.Label))
 			if len(x.Probe) > 0 {
 				fmt.Fprintf(w, "      > %s\n", hex.EncodeToString(x.Probe))
 			}
@@ -183,7 +183,7 @@ func writeTable(w io.Writer, scans []scan) error {
 			case res.Confidence > 0:
 				match = "hint"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%.2f\t%s\t%s\n", s.target, res.Protocol.Slug(), match, res.Confidence, dash(res.Variant), detail(res))
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%.2f\t%s\t%s\n", printable(s.target.String()), res.Protocol.Slug(), match, res.Confidence, dash(printable(res.Variant)), printable(detail(res)))
 		}
 	}
 	return tw.Flush()

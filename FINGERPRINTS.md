@@ -35,7 +35,18 @@ Two rules hold for every fingerprinter:
   an oversized one) is set aside and the exchange keeps waiting for the
   real answer until its retransmission window ends; only then is the
   foreign datagram judged. A UDP service of another protocol therefore
-  costs one window before no match.
+  costs one window before no match. The wait is also bounded in datagrams:
+  after 64 that are not the answer the exchange ends as it does at the end
+  of its window, with the first foreign datagram when there was one and
+  with "could not decide" otherwise.
+
+And one for every result:
+
+- **A result is text.** Whatever a fingerprinter reports from the endpoint
+  (names, versions, URIs, reason strings, topics, a certificate subject)
+  holds graphic characters only, at most 512 runes per string read off the
+  wire: control and format characters, line separators and octets that are
+  not UTF-8 are dropped ([SECURITY.md](SECURITY.md)).
 
 ## Detection vs. identification
 
@@ -43,7 +54,10 @@ Two rules hold for every fingerprinter:
   endpoint speaks the protocol — a handshake or one harmless request.
 - **Identify** (`ModeIdentify`) additionally sends the protocol's standard
   read-only identity request and fills `Result.Identity`. It never writes,
-  controls, or changes configuration.
+  controls, or changes configuration. A protocol without an identity
+  service gets no further request by default: for IEC 60870-5-104 identify
+  mode is detection, unless the caller opts in to starting data transfer
+  (below).
 
 Intrusiveness grades what a fingerprinter puts on the wire so careful scans
 can exclude the noisier ones:
@@ -171,10 +185,39 @@ them). Identify reads the device attributes (group 0, variation 254).
 Sends TESTFR act, which a controlled station answers with TESTFR con in any
 state without starting data transfer. The reply must be the confirmation
 (0x83), not an echo of the activation (0x43), so echo services do not match.
-Identify starts data transfer (STARTDT), records the spontaneous ASDUs the
-station sends — the common address, and type identifiers such as an end of
-initialisation — acknowledges them and stops data transfer again. No
-interrogation or command is sent.
+Up to four APDUs the station sends on its own before the confirmation (its
+own TESTFR act, an S- or I-format APDU) are read and scored, never answered.
+
+**Identify mode sends nothing more by default** (decision of v0.8.0). IEC 104
+has no identity object, and every request beyond TESTFR changes the
+station: the result of identify mode is the result of detection, with one
+evidence line saying that data transfer was not started. No identity is
+reported: no common address, no ASDU types. This holds at every
+intrusiveness level, so also under `SafeEngineConfig` and `otprobe --safe`.
+
+**Starting data transfer is an option**, `iec104.Fingerprinter.StartDT`
+(`otprobe detect --identify --iec104-startdt`). With it, identify mode sends
+STARTDT act, reads the APDUs the station sends within a window (one second
+by default, at most 256 APDUs), answers a TESTFR act of the station, sends
+one S-format APDU that acknowledges the I-format APDUs received, and sends
+STOPDT act. It reports the common addresses and the type identifiers seen
+(the 16 lowest of each, the rest counted), such as an end of initialisation.
+No interrogation or command is sent: a general interrogation makes the
+station send its whole process image.
+
+The option changes the station, which is why it is one:
+
+- A station gives data transfer to the connection that sent STARTDT. With
+  one redundancy group (the default of most stations) the connection of a
+  control centre stops receiving, or is closed by the station.
+- The acknowledgement takes the acknowledged events off the station's
+  queue. They are not sent to the control centre again.
+
+It needs a scan that allows read-only probes and is refused otherwise: with
+`StartDT` set and `MaxIntrusiveness` below `ReadOnly`, `Detect` returns a
+`*core.DetectError` of operation `startdt` and opens no connection, in
+detect mode too. `otprobe` refuses `--iec104-startdt` together with `--safe`
+(exit 3).
 
 ### OCPP (`ocpp`, TCP/WebSocket, passive)
 

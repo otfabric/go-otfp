@@ -41,6 +41,14 @@ func (e *NotConnackError) Unwrap() error { return e.Err }
 // Client is a minimal, read-only MQTT client session for fingerprinting:
 // it connects, subscribes at QoS 0, reads, unsubscribes and disconnects.
 // It never publishes.
+//
+// A Client belongs to one goroutine: its methods, Close included, are not
+// safe for concurrent use. Cancelling the context given to Dial ends its
+// pending I/O from outside. Close may be called more than once: the first
+// call returns the connection's close error, a later call does nothing and
+// returns nil. After Close, Connect, Subscribe and ReadPacket fail with a
+// *core.DetectError that matches net.ErrClosed, and Ping and Unsubscribe
+// report false.
 type Client struct {
 	// S is the session.
 	S *wire.Session
@@ -145,7 +153,7 @@ func (c *Client) Unsubscribe(filters ...string) bool {
 }
 
 // Close sends DISCONNECT when the broker accepted the connection, and
-// closes the session.
+// closes the session. See Client for a second call.
 func (c *Client) Close() error {
 	if c.connected {
 		c.connected = false

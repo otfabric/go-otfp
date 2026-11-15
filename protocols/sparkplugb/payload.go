@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/otfabric/go-otfp/internal/fpx"
 )
 
 // Bounds on what is decoded and kept from one payload.
@@ -227,20 +229,16 @@ func decodeMetric(b []byte) (metric, error) {
 	return m, nil
 }
 
-// clean sanitises a name for an identity: printable UTF-8, at most
-// maxNameLen runes, without the separators the identity lists use.
+// clean returns a name as text for an identity: graphic characters only
+// (fpx.Graphic), at most maxNameLen runes, without the separators the
+// identity lists use.
 func clean(s string) string {
-	s = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f || r == utf8.RuneError || r == ',' || r == ';' {
+	return fpx.Text(strings.Map(func(r rune) rune {
+		if r == ',' || r == ';' {
 			return -1
 		}
 		return r
-	}, strings.ToValidUTF8(s, ""))
-	s = strings.TrimSpace(s)
-	if utf8.RuneCountInString(s) > maxNameLen {
-		s = string([]rune(s)[:maxNameLen])
-	}
-	return s
+	}, s), maxNameLen)
 }
 
 // State is a host application STATE.

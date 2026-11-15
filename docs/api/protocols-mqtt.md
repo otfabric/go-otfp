@@ -116,7 +116,7 @@ Disconnect is the DISCONNECT packet (normal disconnection in MQTT 5).
 func Framer(limit int) wire.Framer
 ```
 
-Framer returns a wire.Framer that reads one MQTT control packet of at most limit bytes (header included). A reserved packet type, flags MQTT forbids for the type, a five-byte remaining length or a packet larger than limit stop the read.
+Framer returns a wire.Framer that reads one MQTT control packet of at most limit bytes (header included). A reserved packet type, flags MQTT forbids for the type, a five-byte remaining length or a packet larger than limit stop the read; no bytes yet asks for more.
 
 ### func IsUnsuback
 
@@ -140,7 +140,7 @@ LevelName returns "3.1.1" or "5.0".
 func ParseSuback(level byte, p Packet, id uint16, filters int) ([]byte, error)
 ```
 
-ParseSuback validates p as the SUBACK of packet identifier id with one code per filter, and returns the codes (0x00..0x02 granted QoS, 0x80 and above refusals).
+ParseSuback validates p as the SUBACK of packet identifier id with one code per filter, and returns the codes (0x00..0x02 granted QoS, 0x80 and above refusals). The codes are borrowed from p.Body.
 
 ### func PeekTopic
 
@@ -164,7 +164,7 @@ PingReq is the PINGREQ packet.
 func Sanitize(s string, max int) string
 ```
 
-Sanitize returns s as printable UTF-8 of at most max runes: invalid sequences and control characters are dropped.
+Sanitize returns s as text of at most max runes, without leading and trailing spaces: octets that are not UTF-8, control and format characters and every other character that is not graphic (unicode.IsGraphic) are dropped.
 
 ### func Subscribe
 
@@ -224,6 +224,8 @@ type Client struct {
 
 Client is a minimal, read-only MQTT client session for fingerprinting: it connects, subscribes at QoS 0, reads, unsubscribes and disconnects. It never publishes.
 
+A Client belongs to one goroutine: its methods, Close included, are not safe for concurrent use. Cancelling the context given to Dial ends its pending I/O from outside. Close may be called more than once: the first call returns the connection's close error, a later call does nothing and returns nil. After Close, Connect, Subscribe and ReadPacket fail with a \*core.DetectError that matches net.ErrClosed, and Ping and Unsubscribe report false.
+
 #### func Dial
 
 ```go
@@ -238,7 +240,7 @@ Dial opens a session to target for protocol p (the protocol its errors are attri
 func (c *Client) Close() error
 ```
 
-Close sends DISCONNECT when the broker accepted the connection, and closes the session.
+Close sends DISCONNECT when the broker accepted the connection, and closes the session. See Client for a second call.
 
 #### func (Client) Connect
 
@@ -345,7 +347,12 @@ type Fingerprinter struct {
 	// Window bounds the wait for the $SYS version in identify mode. Zero
 	// means one second, capped by the target timeout.
 	Window time.Duration
-	// ClientID, when set, replaces the random client identifier.
+	// ClientID, when set, replaces the random client identifier. An MQTT
+	// broker has one session per client identifier: with the identifier
+	// of a client that is connected, the broker disconnects that client,
+	// and the clean session of the probe discards the session the broker
+	// stored for it (its subscriptions and queued messages). Use an
+	// identifier no device or application uses.
 	ClientID string
 }
 ```
@@ -422,7 +429,7 @@ Packet is one control packet.
 func ParsePacket(b []byte) (Packet, error)
 ```
 
-ParsePacket validates that b is exactly one control packet.
+ParsePacket validates that b is exactly one control packet. The Packet's Body is borrowed: it is the part of b after the fixed header, not a copy, and changes with b.
 
 ### type Properties
 
@@ -503,4 +510,4 @@ Publish is a parsed PUBLISH.
 func ParsePublish(level byte, p Packet) (Publish, error)
 ```
 
-ParsePublish validates p as a PUBLISH of a session of the given level.
+ParsePublish validates p as a PUBLISH of a session of the given level. The Publish's Payload is borrowed from p.Body, and so from the octets ParsePacket was given; Topic is a copy.

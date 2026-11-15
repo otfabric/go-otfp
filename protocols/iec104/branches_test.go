@@ -27,6 +27,13 @@ func TestApciEdges(t *testing.T) {
 	if joinInts([]int{1, 2, 3}) != "1,2,3" {
 		t.Fatal("joinInts")
 	}
+	// The acknowledgement carries N(R), the last N(S) plus one, modulo 2^15.
+	for lastNS, want := range map[uint16][2]byte{0: {0x02, 0x00}, 1: {0x04, 0x00}, 127: {0x00, 0x01}, 32766: {0xFE, 0xFF}, 32767: {0x00, 0x00}} {
+		b := sFormat(lastNS)
+		if a, err := Parse(b); err != nil || a.Format != 'S' || b[4] != want[0] || b[5] != want[1] {
+			t.Errorf("sFormat(%d) = % x (%v), want N(R) octets % x", lastNS, b, err, want)
+		}
+	}
 }
 
 func TestDetectEdges(t *testing.T) {
@@ -46,7 +53,8 @@ func TestDetectEdges(t *testing.T) {
 }
 
 func TestIdentifyEdges(t *testing.T) {
-	f := &Fingerprinter{Window: 200 * time.Millisecond}
+	f := &Fingerprinter{Window: 200 * time.Millisecond, StartDT: true}
+	identify := core.Options{Mode: core.ModeIdentify, MaxIntrusiveness: core.ReadOnly}
 	cases := map[string]testsrv.Handler{
 		// STARTDT never confirmed (the station keeps silent).
 		"no startdt con": testsrv.Script(U(uTestCon)),
@@ -73,7 +81,7 @@ func TestIdentifyEdges(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			target := testsrv.TCP(t, h)
 			target.Timeout = 300 * time.Millisecond
-			r, err := f.Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify})
+			r, err := f.Detect(context.Background(), target, identify)
 			if err != nil || !r.Matched {
 				t.Fatalf("%v %v", r, err)
 			}
@@ -83,7 +91,7 @@ func TestIdentifyEdges(t *testing.T) {
 	target := testsrv.TCP(t, testsrv.Script(U(uTestCon), U(uStartCon)))
 	target.Timeout = 150 * time.Millisecond
 	start := time.Now()
-	_, _ = New().Detect(context.Background(), target, core.Options{Mode: core.ModeIdentify})
+	_, _ = (&Fingerprinter{StartDT: true}).Detect(context.Background(), target, identify)
 	if time.Since(start) > 900*time.Millisecond {
 		t.Fatalf("window not capped by the timeout: %v", time.Since(start))
 	}

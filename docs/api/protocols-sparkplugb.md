@@ -55,7 +55,7 @@ Namespace is the Sparkplug B topic namespace.
 var Filters = []string{"spBv1.0/STATE/+", "STATE/+", "spBv1.0/+/+/+", "spBv1.0/+/+/+/+"}
 ```
 
-Filters are the topic filters subscribed to.
+Filters are the topic filters subscribed to. New copies them: change the variable, if at all, before fingerprinters are constructed and not while one is; a fingerprinter from New keeps the filters it was constructed with. A Fingerprinter that was not made by New copies them at the start of each Detect.
 
 ## Types
 
@@ -68,8 +68,18 @@ type Fingerprinter struct {
 	Window time.Duration
 	// MaxMessages bounds the messages read; zero means DefaultMaxMessages.
 	MaxMessages int
-	// ClientID, when set, replaces the random client identifier.
+	// ClientID, when set, replaces the random client identifier. An MQTT
+	// broker has one session per client identifier: with the identifier
+	// of a client that is connected, the broker disconnects that client,
+	// and the clean session of the probe discards the session the broker
+	// stored for it (its subscriptions and queued messages). Use an
+	// identifier no device or application uses.
 	ClientID string
+
+	// filters is New's copy of Filters, joined with U+0000 (which no MQTT
+	// string holds); empty for a Fingerprinter that was not made by New. A
+	// string, so that the type stays comparable and the copy cannot change.
+
 }
 ```
 

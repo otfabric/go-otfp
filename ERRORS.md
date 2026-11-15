@@ -18,7 +18,14 @@ result; the second is a typed error.
 In a `Report`, a per-protocol failure never fails the whole scan: it is
 recorded in that result's `Error` field, and `Scan` itself returns an error
 only for an invalid target or when no fingerprinter applies
-(`ErrNoFingerprinters`).
+(`ErrNoFingerprinters`). An engine without a registry (the zero `Engine`,
+`NewEngine(nil, …)`) has no fingerprinters: `Scan` returns
+`ErrNoFingerprinters`, `Detect` a `*ProtocolNotFoundError`.
+
+An invalid target is: an empty `Host` or one with a space, a control
+character or `/`; a `Port` outside 1..65535; a negative `Timeout`; an unknown
+`Network`; TLS on UDP; a `Path` that does not start with `/` or holds a
+space or a control character.
 
 A fingerprinter's error is **always a transport error** — `TimeoutError`,
 `ConnectionError` or `DetectError`. A peer that closes the connection, sends
@@ -33,19 +40,39 @@ All wrap an underlying cause (`errors.As` / `Unwrap` work) and name the
 protocol and, where relevant, the address and operation.
 
 - **`TimeoutError`** — a dial, write or read exceeded its deadline. `Op` is
-  `"dial"`, `"write"`, `"read"` or `"tls"`.
+  `"dial"`, `"write"`, `"read"` or `"tls"`. It matches
+  `context.DeadlineExceeded` with `errors.Is`, whether the scan's context or
+  the target's own `Timeout` ended the operation, so one test covers every
+  timeout of a probe.
 - **`ConnectionError`** — a dial failed for a reason other than a timeout
   (refused, unreachable, reset, name resolution). `Refused()` reports an
   actively refused connection — nothing listens there — which ends a TCP
   scan when `StopOnRefused` is set.
 - **`DetectError`** — an I/O failure during an exchange that is neither a
-  timeout nor a refusal, with the failing `Op`.
+  timeout nor a refusal, with the failing `Op`. It is also how a probe that
+  was not made, or not completed, reports why; these `Op` values name the
+  cases, and nothing was sent for the first two:
+  - `"request"`: the target's `Host`, or the path of the OCPP request
+    (`Target.Path`, `ocpp.Config.Path`), cannot be one Host header value or
+    one request line. Returned by the OCPP, OpenADR and IEEE 2030.5
+    fingerprinters called directly; through the engine `Validate` refuses
+    the target first.
+  - `"startdt"`: `iec104.Fingerprinter.StartDT` is set and the scan allows
+    passive probes only.
+  - `"read"` with the cause "no answer among 64 datagrams": a UDP round trip
+    read 64 datagrams that were not its answer.
+  - `"observer"`, `"logger"`: a callback of the caller's `Observer`, or its
+    `Logger`, did not return normally; the cause names the method.
+  - `"detect"`: the fingerprinter itself did not return normally.
 - **`InvalidResponseError`** — a reply that was recognisably the protocol but
   malformed. Fingerprinters use it only where the distinction matters; most
   wrong replies are a plain non-match.
 - **`ProtocolNotFoundError`** — `Engine.Detect` was asked for a protocol with
   no registered fingerprinter (for the target's transport).
 - **`ErrNoFingerprinters`** — `Scan` found no applicable fingerprinter.
+- `Registry.Register` returns a plain error for a nil fingerprinter, a nil
+  registry, an invalid protocol or a protocol and network already
+  registered.
 
 ## Protocol package errors
 

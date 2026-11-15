@@ -46,6 +46,11 @@ func (e *TimeoutError) Error() string {
 // Unwrap returns the underlying error.
 func (e *TimeoutError) Unwrap() error { return e.Err }
 
+// Is reports whether target is context.DeadlineExceeded: every timeout of a
+// probe matches it with errors.Is, whether the scan's context or the
+// target's own Timeout ended the operation.
+func (e *TimeoutError) Is(target error) bool { return target == context.DeadlineExceeded }
+
 // ConnectionError is a dial failure other than a timeout: refused,
 // unreachable, reset, name resolution.
 type ConnectionError struct {

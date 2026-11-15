@@ -5,13 +5,13 @@ package e2e_test
 import (
 	"context"
 	"net"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
 
 	otfp "github.com/otfabric/go-otfp"
 	"github.com/otfabric/go-otfp/core"
+	"github.com/otfabric/go-otfp/internal/chaos"
 	"github.com/otfabric/go-otfp/internal/fuzzkit"
 	"github.com/otfabric/go-otfp/internal/testsrv"
 )
@@ -114,12 +114,14 @@ func TestCancellationIsPrompt(t *testing.T) {
 	}
 }
 
-// Scans, including cancelled and parallel ones, leave no goroutines behind.
+// Scans, including cancelled and parallel ones, leave no goroutine and no
+// file descriptor behind: every goroutine started since the servers were
+// up has ended (the servers' own per-connection goroutines end as their
+// clients disconnect).
 func TestNoGoroutineLeaks(t *testing.T) {
 	tcp := hostile(t, core.TCP)
 	udp := hostile(t, core.UDP)
-	settle()
-	before := runtime.NumGoroutine()
+	leaks := chaos.Snapshot()
 
 	for _, parallel := range []bool{false, true} {
 		cfg := core.DefaultEngineConfig()
@@ -137,23 +139,5 @@ func TestNoGoroutineLeaks(t *testing.T) {
 			}
 		}
 	}
-
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		settle()
-		// The hostile servers' per-connection goroutines end as their
-		// clients disconnect; allow a little slack for those in flight.
-		if n := runtime.NumGoroutine(); n <= before+2 {
-			return
-		} else if time.Now().After(deadline) {
-			buf := make([]byte, 1<<16)
-			t.Fatalf("goroutines: %d before, %d after\n%s", before, n, buf[:runtime.Stack(buf, true)])
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-}
-
-func settle() {
-	runtime.GC()
-	time.Sleep(20 * time.Millisecond)
+	leaks.Check(t)
 }

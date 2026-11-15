@@ -19,7 +19,8 @@ In identify mode the MMS Identify service is called (vendor, model, revision). T
 ```go
 type Config struct {
 	// CallingTSEL and CalledTSEL are the transport selectors of the COTP
-	// CR; nil means 0x0001, the IEC 61850 default.
+	// CR; nil means 0x0001, the IEC 61850 default. NewWithConfig copies
+	// them: the caller keeps its own slices.
 	CallingTSEL, CalledTSEL []byte
 }
 ```
