@@ -27,7 +27,7 @@ TEST_PKGS := $(shell go list ./... | grep -vE '/interop|/examples')
 INTEROP_TAGS := interop
 
 # docsync release of docs-check (DOC-008).
-DOCSYNC_VERSION := v0.3.1
+DOCSYNC_VERSION := v0.4.0
 
 # Build information for `otprobe version`, as the release workflow injects it:
 # on a tag, the version without its leading v and the tag; off a tag, dev and
